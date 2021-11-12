@@ -1,0 +1,78 @@
+#version 450
+
+#define PIXELS_PER_IMAGE 784 //28*28
+#define ARRAY_ELEMENTS_PER_IMAGE (PIXELS_PER_IMAGE / 4)
+
+#define MaskAndShiftRight(val, mask, shift) ((val & mask) >> shift)
+
+//layout (local_size_x = 256) in;
+layout (local_size_x = ARRAY_ELEMENTS_PER_IMAGE) in;
+
+layout(std430, set=0, binding=0) readonly buffer trainBuffer { uint train[]; };
+layout(std430, set=0, binding=1) readonly buffer testBuffer { uint test[]; };
+layout(std430, set=0, binding=2) buffer distPerPxlBuffer { uint pxlDist[]; };
+layout(std430, set=0, binding=3) coherent buffer distPerImgBuffer { uint imgDist[]; };
+
+layout( push_constant ) uniform constants
+{
+    uint distP;
+    uint testId;
+} pushConstants;
+
+uint mod_u32( uint u32_bas , uint u32_div )
+{
+    float   flt_res =  mod( float(u32_bas), float(u32_div));
+    uint    u32_res = uint( flt_res );
+    return( u32_res );
+}
+
+uint pow_u32( uint val, uint power)
+{
+    uint result = 1;
+    for (uint i = 0; i < power; i++)
+    {
+        result *= val;
+    }
+    return val;
+}
+
+void main()
+{
+    // NOTE(heyyod): Pixels are stored in an array of bytes so we need to seperate the uint
+    // into 4 seperate values and operate on them seperately.
+    uint iTrain = gl_GlobalInvocationID.x;
+    uint iTest = mod_u32(iTrain, ARRAY_ELEMENTS_PER_IMAGE) + pushConstants.testId * ARRAY_ELEMENTS_PER_IMAGE;
+    uint iDist = iTrain / ARRAY_ELEMENTS_PER_IMAGE;
+    
+    uint trainPixels = train[iTrain];
+    uint trainPixel0 = MaskAndShiftRight(trainPixels, 0x000000FF, 0);
+    uint trainPixel1 = MaskAndShiftRight(trainPixels, 0x0000FF00, 8);
+    uint trainPixel2 = MaskAndShiftRight(trainPixels, 0x00FF0000, 16);
+    uint trainPixel3 = MaskAndShiftRight(trainPixels, 0xFF000000, 24);
+    
+    uint testPixels = test[iTest];
+    uint testPixel0 = MaskAndShiftRight(testPixels, 0x000000FF, 0);
+    uint testPixel1 = MaskAndShiftRight(testPixels, 0x0000FF00, 8);
+    uint testPixel2 = MaskAndShiftRight(testPixels, 0x00FF0000, 16);
+    uint testPixel3 = MaskAndShiftRight(testPixels, 0xFF000000, 24);
+    
+    uint pixelDist0 = trainPixel0 - testPixel0;
+    uint pixelDist1 = trainPixel1 - testPixel1;
+    uint pixelDist2 = trainPixel2 - testPixel2;
+    uint pixelDist3 = trainPixel3 - testPixel3;
+    
+    pxlDist[iTrain * 4 + 0] = pixelDist0 * pixelDist0;
+    pxlDist[iTrain * 4 + 1] = pixelDist1 * pixelDist1;
+    pxlDist[iTrain * 4 + 2] = pixelDist2 * pixelDist2;
+    pxlDist[iTrain * 4 + 3] = pixelDist3 * pixelDist3;
+    
+    barrier();
+    if (gl_LocalInvocationID.x == 0)
+    {
+        imgDist[iDist] = 0;
+        for (uint iPixel = 0; iPixel < PIXELS_PER_IMAGE; iPixel++)
+        {
+            imgDist[iDist] += pxlDist[iTrain * 4 + iPixel];
+        }
+    }
+}

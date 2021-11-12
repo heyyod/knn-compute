@@ -1,0 +1,9 @@
+#version 450
+
+#define MAX_DIM 784 //28*28
+
+layout (local_size_x = 832) in;
+
+void main()
+{
+}
