@@ -7,7 +7,7 @@ IF [%1] == [] (
 
 IF %1 == d (
 	echo Debug Build
-	set MODE=-Od -DDEBUG_MODE
+	set MODE=-Od -DDEBUG_MODE -DVULKAN_VALIDATION_LAYERS_ON
 )
 IF %1 == r (
 	echo Release Build

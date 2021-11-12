@@ -15,12 +15,13 @@ typedef uint64_t  u64;
 typedef float     f32;
 typedef double    f64;
 
+#define U32_MAX 0xFFFFFFFF
 #define F32_MAX_HEX 0xFFFF7F7F
 #define F32_MAX_EXP 3.4028235e+38
 
 #define global_var static
 #define local_var static
-#define function static
+#define func  static
 
 #define KILOBYTES(val) (val * 1024ULL)
 #define MEGABYTES(val) (KILOBYTES(val) * 1024ULL)
@@ -44,10 +45,12 @@ AssertBreak()
 #define Assert(val)
 #endif
 
+#include <iostream>
+#define Print(val) std::cout << val
+
 #if DEBUG_MODE
 // TODO(heyyod): Use fast_io instead?
-#include <iostream>
-#define DebugPrint(val) std::cerr << val
+#define DebugPrint(val) Print(val)
 #else
 #define DebugPrint(val)
 #endif
