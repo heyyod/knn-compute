@@ -28,7 +28,6 @@ struct vulkan_pipeline
 
 struct push_constants
 {
-    u32 distP;
     u32 testId;
 };
 

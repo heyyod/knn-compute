@@ -11,7 +11,7 @@ namespace Vulkan
     func bool UploadInputData(void *testData, void *trainData);
     
     func void ClearPipeline();
-    func void ClearBuffer(vulkan_buffer buffer);
+    func void ClearBuffer(vulkan_buffer &buffer);
     func void Destroy();
     
     func bool Compute(u32 &testImageIndex, u32 distP);
@@ -500,8 +500,7 @@ CreatePipeline(pipeline_type pipelineType, u32 **distPerImgData, u64 &distPerImg
             distPerImgDataSize = TRAIN_NUM_IMAGES * sizeof(u32);
             
             // NOTE(heyyod): Create buffer for the input and output data
-            if (!VulkanIsValidHandle(vulkan.distPerImgBuffer.handle) && !VulkanIsValidHandle(vulkan.distPerPixelBuffer.handle) &&
-                CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, distPerPixelDataSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.distPerPixelBuffer, true) &&
+            if (CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, distPerPixelDataSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.distPerPixelBuffer, true) &&
                 CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, distPerImgDataSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.distPerImgBuffer, true))
             {
                 *distPerImgData = (u32 *)vulkan.distPerImgBuffer.data;
@@ -644,12 +643,12 @@ func bool Vulkan::
 Compute(u32 &testImageIndex, u32 distP)
 {
     // NOTE(heyyod): In glsl the u8 array is "casted" to a uint array, so
-    // each element of the array contains 4 pixels. This means tha in one invocation
-    // we operate on 4 pixels
-    //u64 groupCount = nTrainImages * nPixelsPerImage / 4;
+    // each element of the array contains 4 pixels. This means that in one invocation
+    // we operate on 4 pixels and so we need 784/4=196 invocations per image.
+    // So the total number of workgroups is the number of images we test against. 
+    u32 groupCount = TRAIN_NUM_IMAGES;
     
     push_constants pc  = {};
-    pc.distP = distP;
     pc.testId = testImageIndex;
     
     VkCommandBufferBeginInfo beginInfo = {};
@@ -659,7 +658,7 @@ Compute(u32 &testImageIndex, u32 distP)
     vkCmdBindPipeline(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipeline.handle);
     vkCmdBindDescriptorSets(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipeline.layout, 0, 1, &vulkan.globalDescSet, 0, 0);
     vkCmdPushConstants(vulkan.cmdBuffer, vulkan.pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_constants), &pc);
-    vkCmdDispatch(vulkan.cmdBuffer, TRAIN_NUM_IMAGES, 1, 1);
+    vkCmdDispatch(vulkan.cmdBuffer, groupCount, 1, 1);
     AssertSuccess(vkEndCommandBuffer(vulkan.cmdBuffer));
     
     VkSubmitInfo submitInfo = {};
@@ -737,6 +736,13 @@ ClearPipeline()
         {
             vkDestroyPipelineLayout(vulkan.device, vulkan.pipeline.layout, 0);
         }
+        
+        if(VulkanIsValidHandle(vulkan.globalDescSetLayout))
+            vkDestroyDescriptorSetLayout(vulkan.device, vulkan.globalDescSetLayout, 0);
+        if(VulkanIsValidHandle(vulkan.globalDescPool))
+            vkDestroyDescriptorPool(vulkan.device, vulkan.globalDescPool, 0);
+        ClearBuffer(vulkan.distPerPixelBuffer);
+        ClearBuffer(vulkan.distPerImgBuffer);
     }
 }
 
@@ -783,12 +789,15 @@ CreateBuffer(VkBufferUsageFlags usage, u64 size, VkMemoryPropertyFlags propertie
 }
 
 func void Vulkan::
-ClearBuffer(vulkan_buffer buffer)
+ClearBuffer(vulkan_buffer &buffer)
 {
     if(VulkanIsValidHandle(vulkan.device))
     {
         if(VulkanIsValidHandle(buffer.handle))
+        {
             vkDestroyBuffer(vulkan.device, buffer.handle, 0);
+            buffer.handle = VK_NULL_HANDLE;
+        }
         if(VulkanIsValidHandle(buffer.memoryHandle))
         {
             vkFreeMemory(vulkan.device, buffer.memoryHandle, 0);
@@ -805,16 +814,8 @@ Destroy()
         
         ClearPipeline();
         
-        if(VulkanIsValidHandle(vulkan.globalDescSetLayout))
-            vkDestroyDescriptorSetLayout(vulkan.device, vulkan.globalDescSetLayout, 0);
-        
         ClearBuffer(vulkan.inTrainBuffer);
         ClearBuffer(vulkan.inTestBuffer);
-        ClearBuffer(vulkan.distPerPixelBuffer);
-        ClearBuffer(vulkan.distPerImgBuffer);
-        
-        if(VulkanIsValidHandle(vulkan.globalDescPool))
-            vkDestroyDescriptorPool(vulkan.device, vulkan.globalDescPool, 0);
         
         if(VulkanIsValidHandle(vulkan.cmdPool))
             vkDestroyCommandPool(vulkan.device, vulkan.cmdPool, 0);
@@ -838,165 +839,3 @@ Destroy()
     DebugPrint("Destroyed Vulkan\n");
     return;
 }
-
-#if 0
-func bool Vulkan::
-Draw(update_data *data)
-{
-    frame_prep_resource *res = GetNextAvailableResource();
-    
-    // NOTE: Get the next image that we'll use to create the frame and draw it
-    // Signal the semaphore when it's available
-    local_ u32 nextImage = 0;
-    local_ VkResult result = {}; 
-    {
-        result = vkAcquireNextImageKHR(vulkan.device, vulkan.swapchain, UINT64_MAX, res->imgAvailableSem, 0, &nextImage);
-        
-        if (result == VK_ERROR_OUT_OF_DATE_KHR)
-        {
-            if (!CreateSwapchain())
-                return false;
-        }
-        else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
-        {
-            Assert("Could not aquire next image");
-            return false;
-        }
-    }
-    
-    // NOTE(heyyod): Prepare the frame using the selected resources
-    {
-        local_ VkCommandBufferBeginInfo commandBufferBeginInfo = {};
-        commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        
-        // NOTE(heyyod): THE ORDER OF THESE VALUES MUST BE IDENTICAL
-        // TO THE ORDER WE SPECIFIED THE RENDERPASS ATTACHMENTS
-        local_ VkClearValue clearValues[2] = {}; // NOTE(heyyod): this is a union
-        clearValues[0].color = VulkanClearColor(data->clearColor[0], data->clearColor[1], data->clearColor[2], 0.0f);
-        clearValues[1].depthStencil = {1.0f, 0};
-        
-        local_ VkRenderPassBeginInfo renderpassInfo = {};
-        renderpassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderpassInfo.renderPass = vulkan.renderPass;
-        renderpassInfo.renderArea.extent = vulkan.windowExtent;
-        renderpassInfo.clearValueCount = ArrayCount(clearValues);
-        renderpassInfo.pClearValues = clearValues;
-        renderpassInfo.framebuffer = vulkan.framebuffers[nextImage];
-        
-        local_ VkViewport viewport = {};
-        viewport.width = (f32) vulkan.windowExtent.width;
-        viewport.height = (f32) vulkan.windowExtent.height;
-        viewport.maxDepth = 1.0f;
-        
-        local_ VkRect2D scissor = {};
-        scissor.extent = vulkan.windowExtent;
-        
-        local_ VkDeviceSize bufferOffset = 0;
-        
-        AssertSuccess(vkBeginCommandBuffer(res->cmdBuffer, &commandBufferBeginInfo));
-        vkCmdBeginRenderPass(res->cmdBuffer, &renderpassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdSetViewport(res->cmdBuffer, 0, 1, &viewport);
-        vkCmdSetScissor(res->cmdBuffer, 0, 1, &scissor);
-        
-        vkCmdBindVertexBuffers(res->cmdBuffer, 0, 1, &vulkan.vertexBuffer.handle, &bufferOffset);
-        vkCmdBindIndexBuffer(res->cmdBuffer, vulkan.indexBuffer.handle, 0, VULKAN_INDEX_TYPE);
-        u32 firstIndex = 0;
-        u32 indexOffset = 0;
-        i32 currentPipelineId = -1;
-        u32 transformId = 0;
-        for(u32 meshId = 0; meshId < vulkan.loadedMeshCount; meshId++)
-        {
-            if (currentPipelineId != (i32)vulkan.loadedMesh[meshId].pipelineID)
-            {
-                currentPipelineId = vulkan.loadedMesh[meshId].pipelineID;
-                vkCmdBindPipeline(res->cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan.pipeline[currentPipelineId].handle);
-                vkCmdBindDescriptorSets(res->cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        vulkan.pipeline[currentPipelineId].layout, 0, 1,
-                                        &vulkan.frameData[nextImage].globalDescriptor, 0, 0);
-            }
-            for(u32 meshInstance = 0; meshInstance < vulkan.loadedMesh[meshId].nInstances; meshInstance++)
-            {
-                vkCmdPushConstants(res->cmdBuffer, vulkan.pipeline[currentPipelineId].layout, VK_SHADER_STAGE_VERTEX_BIT,
-                                   0, sizeof(u32), &transformId);
-                vkCmdDrawIndexed(res->cmdBuffer, vulkan.loadedMesh[meshId].nIndices, 1,
-                                 firstIndex, indexOffset, 0);
-                
-                // NOTE(heyyod): THIS ASSUMES THE TRANFORMS ARE ALWAYS LINEARLY SAVED :(
-                transformId++;
-            }
-            firstIndex += vulkan.loadedMesh[meshId].nIndices;
-            indexOffset += vulkan.loadedMesh[meshId].nVertices;
-        }
-        
-        vkCmdEndRenderPass(res->cmdBuffer);
-        AssertSuccess(vkEndCommandBuffer(res->cmdBuffer));
-    }
-    
-    // NOTE: Wait on imageAvailableSem and submit the command buffer and signal renderFinishedSem
-    {
-        local_ VkPipelineStageFlags waitDestStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        local_ VkSubmitInfo submitInfo = {};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.pWaitDstStageMask = &waitDestStageMask;
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = &res->imgAvailableSem;
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = &res->frameReadySem;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &res->cmdBuffer;
-        AssertSuccess(vkQueueSubmit(vulkan.graphicsQueue, 1, &submitInfo, res->fence));
-        
-        if (result == VK_ERROR_OUT_OF_DATE_KHR)
-        {
-            if (!CreateSwapchain())
-            {
-                Assert("Could not recreate after queue sumbit.\n");
-                return false;
-            }
-        }
-        else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
-        {
-            Assert("Couldn't submit draw.\n");
-            return false;
-        }
-    }
-    
-    // NOTE: Submit image to present when signaled by renderFinishedSem
-    {
-        local_ VkPresentInfoKHR presentInfo = {};
-        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = &res->frameReadySem;
-        presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = &vulkan.swapchain;
-        presentInfo.pImageIndices = &nextImage;
-        result = vkQueuePresentKHR(vulkan.presentQueue, &presentInfo);
-        
-        
-        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
-        {
-            if (!CreateSwapchain())
-            {
-                Assert("Could not recreate after queue present.\n");
-                return false;
-            }
-        }
-        else if (result != VK_SUCCESS)
-        {
-            Assert("Couldn't present image.\n");
-            return false;
-        }
-        
-    }
-    
-    // NOTE(heyyod): Update data for the engine
-    {
-        u32 nextUniformBuffer = (nextImage + 1) % NUM_DESCRIPTORS;
-        data->newCameraBuffer = vulkan.frameData[nextUniformBuffer].cameraBuffer.data;
-        data->newSceneBuffer = vulkan.frameData[nextUniformBuffer].sceneBuffer.data;
-    }
-    
-    return true;
-}
-#endif

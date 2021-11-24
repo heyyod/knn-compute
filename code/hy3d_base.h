@@ -67,5 +67,27 @@ AssertBreak()
 
 #define AdvancePointer(ptr, bytes) ptr = (u8*)ptr + bytes
 
+#if DEBUG_MODE
+#include <chrono>
+#include <thread>
+global_var std::chrono::steady_clock::time_point timeStart;
+global_var std::chrono::steady_clock::time_point timeEnd;
+global_var std::chrono::duration<f32> duration;
+global_var f32 elapsedTime;
+#define Now() std::chrono::steady_clock::now()
+#define TimeStart() timeStart = Now()
+#define TimeEnd() \
+timeEnd = Now(); \
+duration = timeEnd - timeStart; \
+elapsedTime = duration.count()
+#define PrintTimeElapsed() \
+Print("Time Elapsed: " << elapsedTime << "s" << std::endl)
+#define SleepFor(x) std::this_thread::sleep_for(std::chrono::milliseconds(x));
+#else
+#define Now()
+#define TimeStart()
+#define TimeEnd()
+#define PrintTimeElapsed()
+#endif
 
 #endif
