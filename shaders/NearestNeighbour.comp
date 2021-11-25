@@ -5,7 +5,6 @@
 
 #define MaskAndShiftRight(val, mask, shift) ((val & mask) >> shift)
 
-//layout (local_size_x = 256) in;
 layout (local_size_x = ARRAY_ELEMENTS_PER_IMAGE) in;
 
 layout(std430, set=0, binding=0) readonly buffer trainBuffer { uint train[]; };

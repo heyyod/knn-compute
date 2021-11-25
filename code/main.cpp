@@ -5,6 +5,7 @@
 #include "data.h"
 #include "vulkan_platform.cpp"
 #include "nearest.cpp"
+#include "neural_net.cpp"
 
 // NOTE(heyyod): SET TO 1 TO PRINT INFO WHILE THE ALGORITHMS RUN (MUCH SLOWER!)
 #define PRINT_ENABLED 0
@@ -19,28 +20,34 @@ int main()
         return false;
     
     bool vulkanEnabled = false;
-    if (Vulkan::Initialize())
+    if (Vulkan::Initialize() && 
+        Vulkan::UploadInputData(testData.pixels, trainData.pixels))
     {
-        if (Vulkan::UploadInputData(testData.pixels, trainData.pixels))
-        {
-            //free(trainData.pixels);
-            //free(testData.pixels);
-            vulkanEnabled = true;
-            Print("Hardware Acceleration With Vulkan Enabled.\n");
-        }
+        FreeData(trainData);
+        FreeData(testData);
+        
+        vulkanEnabled = true;
+        Print("---- Hardware Acceleration With Vulkan Enabled ----\n");
     }
     else
-        Print("Hardware Acceleration With Vulkan Not Supported.\n");
+    {
+        Print("---- Hardware Acceleration With Vulkan Not Supported ----\n");
+    }
     
-    u32 nTest = 1000;
-    KNearestNeighbour(1, 2.0f, trainData, testData, vulkanEnabled, nTest);
-    KNearestNeighbour(3, 2.0f, trainData, testData, vulkanEnabled, nTest);
-    NearestCentroid(trainData, testData, nTest);
+    neural_net net = {};
+    u32 layerDims[] = {PIXELS_PER_IMAGE, 1000, NUM_CLASSES};
+    if (CreateNeuralNet(layerDims, ArrayCount(layerDims), net))
+    {
+        Print("Created Neural Network\n");
+    }
     
-    FreeData(trainData);
-    FreeData(testData);
     if (vulkanEnabled)
         Vulkan::Destroy();
+    else
+    {
+        FreeData(trainData);
+        FreeData(testData);
+    }
     
     Print("\nFinished. Enter any character and press Enter to exit.");
     u8 stop;

@@ -34,8 +34,7 @@ struct push_constants
 enum pipeline_type
 {
     PIPELINE_NEAREST_NEIGHBOUR,
-    PIPELINE_NEAREST_CENTROID,
-    PIPELINE_DISTANCES_CALC
+    PIPELINE_NEURAL_NET
 };
 
 struct vulkan_engine
@@ -56,8 +55,20 @@ struct vulkan_engine
     
     vulkan_pipeline pipeline;
     
+    // NOTE(heyyod): Input data buffers
     vulkan_buffer inTrainBuffer;
     vulkan_buffer inTestBuffer;
+    
+    // NOTE(heyyod): Neural network buffers
+    vulkan_buffer weightsBuffer;
+    vulkan_buffer biasesBuffer;
+    vulkan_buffer valuesBuffer;
+    
+    // weightedValsBuffer is used as a temp buffer to calculate the products w_i * x_i.
+    // Their sum goes to the values buffer
+    vulkan_buffer weightedValsBuffer;
+    
+    // NOTE(heyyod): K-NN and NC buffers
     vulkan_buffer distPerPixelBuffer;
     vulkan_buffer distPerImgBuffer;
     

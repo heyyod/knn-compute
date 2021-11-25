@@ -9,6 +9,7 @@ namespace Vulkan
     func bool CreateBuffer(VkBufferUsageFlags usage, u64 size, VkMemoryPropertyFlags properties,  vulkan_buffer &bufferOut, bool mapBuffer);
     
     func bool UploadInputData(void *testData, void *trainData);
+    func bool AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeightedVals, f32 **outBiases, f32 **outPerceptronVals);
     
     func void ClearPipeline();
     func void ClearBuffer(vulkan_buffer &buffer);
@@ -286,41 +287,10 @@ Initialize()
             return false;
         }
         
-        /* 
-                char *desiredDeviceExtensions[] = {
-                    VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME,
-                };
-         */
-        
         AssertSuccess(vkEnumeratePhysicalDevices(vulkan.instance, &gpuCount, gpuBuffer));
         vulkan.computeQueueFamilyIndex = UINT32_MAX;
         for (u8 iGPU = 0; iGPU < gpuCount; iGPU++)
         {
-            /* 
-                        u32 deviceExtensionsCount;
-                        VkExtensionProperties availableDeviceExtensions[255] = {};
-                        AssertSuccess(vkEnumerateDeviceExtensionProperties(gpuBuffer[iGPU], 0, &deviceExtensionsCount, 0));
-                        Assert(deviceExtensionsCount <= ArrayCount(availableDeviceExtensions));
-                        AssertSuccess(vkEnumerateDeviceExtensionProperties(gpuBuffer[iGPU], 0, &deviceExtensionsCount, availableDeviceExtensions));
-                        
-                        for (char *desiredDeviceExtension : desiredDeviceExtensions)
-                        {
-                            bool found = false;
-                            for (VkExtensionProperties &availableExtension : availableDeviceExtensions)
-                            {
-                                if (strcmp(desiredDeviceExtension, availableExtension.extensionName) == 0)
-                                {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (!found)
-                            {
-                                return false;
-                            }
-                        }
-                         */
-            
             {
                 // NOTE: Pick a queue family the supports compute operations
                 u32 queueFamilyCount;
@@ -431,7 +401,6 @@ UploadInputData(void *testData, void *trainData)
     memcpy (trainStagingBuffer.data, trainData, trainDataSize);
     memcpy (testStagingBuffer.data, testData, testDataSize);
     
-    
     VkCommandBufferBeginInfo cmdBufferBeginInfo= {};
     cmdBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cmdBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -483,6 +452,37 @@ UploadInputData(void *testData, void *trainData)
     ClearBuffer(testStagingBuffer);
     
     return true;
+}
+
+func bool Vulkan::
+AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **outBiases, f32 **outValues)
+{
+    Assert(nLayers >= 3);
+    
+    u64 valuesSize = 0;
+    u64 weightedValsSize = 0;
+    u64 maxWeightedValsSize = 0;
+    for (u32 i = 1; i < nLayers; i++)
+    {
+        weightedValsSize = layersDims[i] * layersDims[i-1];
+        if (weightedValsSize > maxWeightedValsSize)
+            maxWeightedValsSize = weightedValsSize;
+        valuesSize += layersDims[i];
+    }
+    valuesSize *= sizeof(f32);
+    maxWeightedValsSize *= sizeof(f32);
+    
+    if (CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, valuesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.valuesBuffer, true) &&
+        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, valuesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.biasesBuffer, true) &&
+        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, valuesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.weightsBuffer, true) &&
+        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, maxWeightedValsSize, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vulkan.weightedValsBuffer, false))
+    {
+        *outWeights = (f32 *)vulkan.weightsBuffer.data;
+        *outBiases = (f32 *)vulkan.biasesBuffer.data;
+        *outValues = (f32 *)vulkan.valuesBuffer.data;
+        return true;
+    }
+    return false;
 }
 
 func bool Vulkan::
@@ -598,11 +598,13 @@ CreatePipeline(pipeline_type pipelineType, u32 **distPerImgData, u64 &distPerImg
             loadedShader = LoadShader("..\\build\\shaders\\NearestNeighbour.comp.spv", &compShader);
         }break;
         
-        case PIPELINE_NEAREST_CENTROID:
+        case PIPELINE_NEURAL_NET:
         {
-            loadedShader = LoadShader("..\\build\\shaders\\NearestCentroid.comp.spv", &compShader);
+            
+            loadedShader = LoadShader("..\\build\\shaders\\NearestNeighbour.comp.spv", &compShader);
         }break;
     }
+    
     if(!loadedShader)
     {
         Assert("Couldn't load shaders");
@@ -816,6 +818,12 @@ Destroy()
         
         ClearBuffer(vulkan.inTrainBuffer);
         ClearBuffer(vulkan.inTestBuffer);
+        ClearBuffer(vulkan.weightsBuffer);
+        ClearBuffer(vulkan.biasesBuffer);
+        ClearBuffer(vulkan.valuesBuffer);
+        ClearBuffer(vulkan.weightedValsBuffer);
+        ClearBuffer(vulkan.distPerPixelBuffer);
+        ClearBuffer(vulkan.distPerImgBuffer);
         
         if(VulkanIsValidHandle(vulkan.cmdPool))
             vkDestroyCommandPool(vulkan.device, vulkan.cmdPool, 0);
