@@ -90,15 +90,16 @@ KNearestNeighbour(u32 nNeighbours, f32 distP, image_data &trainData, image_data 
         u32 *distPerImage = 0;
         u64 distPerImageBufferSize = 0;
         
-        Vulkan::CreatePipeline(PIPELINE_NEAREST_NEIGHBOUR, &distPerImage, distPerImageBufferSize);
+        Vulkan::AllocateKnnMemory(&distPerImage, distPerImageBufferSize);
+        Vulkan::CreatePipeline(PIPELINE_TYPE_NEAREST_NEIGHBOUR);
         
         // NOTE(heyyod): Shader only supports manhattan distance
         for (u32 iTest = 0; iTest < nTest; iTest++)
         {
-            Vulkan::Compute(iTest, (u32)distP);
+            Vulkan::KnnCompute(iTest, (u32)distP);
             
             memset(neighbourDists, F32_MAX_HEX, nNeighbours * sizeof(f32));
-            for (u32 iTrain = 0; iTrain < TRAIN_NUM_IMAGES; iTrain++)
+            for (u32 iTrain = 0; iTrain < NUM_TRAIN_IMAGES; iTrain++)
             {
                 u32 dist = distPerImage[iTrain];
                 if (dist < neighbourDists[furthestNeighbour])

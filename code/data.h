@@ -4,8 +4,8 @@
 #define DATA_H
 
 #define PIXELS_PER_IMAGE 28*28
-#define TRAIN_NUM_IMAGES 60000
-#define TEST_NUM_IMAGES 10000
+#define NUM_TRAIN_IMAGES 60000
+#define NUM_TEST_IMAGES 10000
 #define NUM_CLASSES 10
 
 #define EndianSwap(x) (x = (x>>24)|((x<<8)&0x00FF0000)|((x>>8)&0x0000FF00)|(x<<24))

@@ -1,0 +1,56 @@
+#version 450
+
+#define MaskAndShiftRight(val, mask, shift) ((val & mask) >> shift)
+
+layout (local_size_x = 256) in;
+
+layout(std430, set=0, binding=0) coherent buffer inputBuffer { float values[]; }; // train, test, perc values
+layout(std430, set=0, binding=1) readonly buffer weightsBuffer { float weights[]; };
+layout(std430, set=0, binding=2) readonly buffer biasesBuffer { float biases[]; };
+layout(std430, set=0, binding=3) buffer weightedValsBuffer { float weightedVals[]; };
+
+layout( push_constant ) uniform constants
+{
+    uint inValuesIndex;
+    uint inValuesDim;
+    uint weightsIndex;
+    uint weightsDim;
+    uint biasesIndex;
+    uint outValuesIndex;
+    uint outValuesDim;
+    uint batch;
+} pushConstants;
+
+uint mod_u32( uint u32_bas , uint u32_div )
+{
+    float   flt_res =  mod( float(u32_bas), float(u32_div));
+    uint    u32_res = uint( flt_res );
+    return( u32_res );
+}
+
+void main()
+{
+    uint wv = gl_GlobalInvocationID.x + pushConstants.batch * gl_NumWorkGroups.x * 256;
+    if (wv >= pushConstants.inValuesDim * pushConstants.weightsDim * pushConstants.outValuesDim)
+        return;
+    
+    
+    uint i = pushConstants.inValuesIndex + mod_u32(wv, pushConstants.weightsDim);
+    uint w = pushConstants.weightsIndex + wv;
+    weightedVals[wv] = values[i] * weights[w];
+    
+    barrier();
+    
+    if (gl_GlobalInvocationID.x < pushConstants.outValuesDim)
+    {
+        uint b = pushConstants.biasesIndex + gl_GlobalInvocationID.x;
+        uint o = pushConstants.outValuesIndex + gl_GlobalInvocationID.x;
+        
+        values[o] = 0.0f;
+        for (uint i = 0; i < pushConstants.weightsDim; i++)
+        {
+            values[o] += weightedVals[i + wv];
+        }
+        values[o] += biases[b];
+    }
+}

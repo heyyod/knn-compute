@@ -26,15 +26,29 @@ struct vulkan_pipeline
     VkPipelineLayout layout;
 };
 
-struct push_constants
+struct push_constants_knn
 {
     u32 testId;
 };
 
+struct push_constants_feed_forward
+{
+    u32 inValuesIndex;
+    u32 inValuesDim;
+    u32 weightsIndex;
+    u32 weightsDim;
+    u32 biasesIndex;
+    u32 outValuesIndex;
+    u32 outValuesDim;
+    u32 batch;
+};
+
 enum pipeline_type
 {
-    PIPELINE_NEAREST_NEIGHBOUR,
-    PIPELINE_NEURAL_NET
+    PIPELINE_TYPE_NEAREST_NEIGHBOUR,
+    PIPELINE_TYPE_FEED_FORWARD,
+    
+    PIPEPLINE_TYPE_COUNT
 };
 
 struct vulkan_engine
@@ -53,16 +67,14 @@ struct vulkan_engine
     VkDescriptorPool globalDescPool;
     VkDescriptorSet globalDescSet;
     
-    vulkan_pipeline pipeline;
+    vulkan_pipeline pipelines[PIPEPLINE_TYPE_COUNT];
     
-    // NOTE(heyyod): Input data buffers
-    vulkan_buffer inTrainBuffer;
-    vulkan_buffer inTestBuffer;
+    // NOTE(heyyod): Input data and neurons' out values buffers
+    vulkan_buffer valuesBuffer;
     
     // NOTE(heyyod): Neural network buffers
     vulkan_buffer weightsBuffer;
     vulkan_buffer biasesBuffer;
-    vulkan_buffer valuesBuffer;
     
     // weightedValsBuffer is used as a temp buffer to calculate the products w_i * x_i.
     // Their sum goes to the values buffer

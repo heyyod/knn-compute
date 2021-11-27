@@ -5,17 +5,19 @@ namespace Vulkan
     func bool LoadDLL();
     func bool Initialize();
     
-    func bool CreatePipeline(pipeline_type pipelineType, u32 **distPerImgData, u64 &distPerImgDataSize);
+    func bool CreatePipeline(pipeline_type pipelineType);
     func bool CreateBuffer(VkBufferUsageFlags usage, u64 size, VkMemoryPropertyFlags properties,  vulkan_buffer &bufferOut, bool mapBuffer);
     
     func bool UploadInputData(void *testData, void *trainData);
-    func bool AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeightedVals, f32 **outBiases, f32 **outPerceptronVals);
+    func bool AllocateKnnMemory(u32 **distPerImgData, u64 &distPerImgDataSize);
+    func bool AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **outBiases, f32 **outValues, f32 **outWeightedVals);
     
-    func void ClearPipeline();
+    func void ClearPipelinesAndStorageBuffers();
     func void ClearBuffer(vulkan_buffer &buffer);
     func void Destroy();
     
-    func bool Compute(u32 &testImageIndex, u32 distP);
+    func bool KnnCompute(u32 &testImageIndex, u32 distP);
+    func bool FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex, u32 outValuesIndex, u32 outValuesDim);
     
     func bool LoadShader(char *filepath, VkShaderModule *shaderOut);
     func bool FindMemoryProperties(u32 memoryType, VkMemoryPropertyFlags requiredProperties, u32 &memoryIndexOut);
@@ -369,37 +371,25 @@ Initialize()
         AssertSuccess(vkAllocateCommandBuffers(vulkan.device, &cmdBufferAllocInfo, &vulkan.cmdBuffer));
     }
     
-    // NOTE(heyyod): Allocate device local buffers for input data
-    {
-        u64 trainDataSize = TRAIN_NUM_IMAGES * PIXELS_PER_IMAGE;
-        u64 testDataSize = TEST_NUM_IMAGES * PIXELS_PER_IMAGE;
-        if (!CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, trainDataSize, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vulkan.inTrainBuffer, false) ||
-            !CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, testDataSize, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vulkan.inTestBuffer, false))
-        {
-            return false;
-        }
-    }
-    
     return true;
 }
 
 func bool Vulkan::
 UploadInputData(void *testData, void *trainData)
 {
-    u64 trainDataSize = TRAIN_NUM_IMAGES * PIXELS_PER_IMAGE;
-    u64 testDataSize = TEST_NUM_IMAGES * PIXELS_PER_IMAGE;
+    u64 trainDataSize = NUM_TRAIN_IMAGES * PIXELS_PER_IMAGE;
+    u64 testDataSize = NUM_TEST_IMAGES * PIXELS_PER_IMAGE;
     
-    vulkan_buffer trainStagingBuffer = {};
-    vulkan_buffer testStagingBuffer = {};
+    vulkan_buffer inputStagingBuffer = {};
     
-    if (!CreateBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, trainDataSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, trainStagingBuffer, true) ||
-        !CreateBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, testDataSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, testStagingBuffer, true))
+    if (!CreateBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, trainDataSize + testDataSize,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, inputStagingBuffer, true))
     {
         return false;
     }
     
-    memcpy (trainStagingBuffer.data, trainData, trainDataSize);
-    memcpy (testStagingBuffer.data, testData, testDataSize);
+    memcpy (inputStagingBuffer.data, trainData, trainDataSize);
+    memcpy ((u8 *)inputStagingBuffer.data + trainDataSize, testData, testDataSize);
     
     VkCommandBufferBeginInfo cmdBufferBeginInfo= {};
     cmdBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -409,33 +399,18 @@ UploadInputData(void *testData, void *trainData)
     VkBufferCopy bufferCopyInfo = {};
     bufferCopyInfo.srcOffset = 0;
     bufferCopyInfo.dstOffset = 0;
-    bufferCopyInfo.size = trainDataSize;
-    vkCmdCopyBuffer(vulkan.cmdBuffer, trainStagingBuffer.handle, vulkan.inTrainBuffer.handle, 1, &bufferCopyInfo);
+    bufferCopyInfo.size = trainDataSize + testDataSize;
+    vkCmdCopyBuffer(vulkan.cmdBuffer, inputStagingBuffer.handle, vulkan.valuesBuffer.handle, 1, &bufferCopyInfo);
     
-    // NOTE(heyyod): Set where to read and where to copy the vertices
-    bufferCopyInfo.srcOffset = 0;
-    bufferCopyInfo.dstOffset = 0;
-    bufferCopyInfo.size = testDataSize;
-    vkCmdCopyBuffer(vulkan.cmdBuffer, testStagingBuffer.handle, vulkan.inTestBuffer.handle, 1, &bufferCopyInfo);
-    
-    VkBufferMemoryBarrier bufferBarriers[2] = {};
+    VkBufferMemoryBarrier bufferBarriers[1] = {};
     bufferBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     bufferBarriers[0].srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
     bufferBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     bufferBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     bufferBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bufferBarriers[0].buffer = vulkan.inTrainBuffer.handle;
+    bufferBarriers[0].buffer = vulkan.valuesBuffer.handle;
     bufferBarriers[0].offset = 0;
     bufferBarriers[0].size = VK_WHOLE_SIZE ;
-    
-    bufferBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    bufferBarriers[1].srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-    bufferBarriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT ;
-    bufferBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bufferBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bufferBarriers[1].buffer = vulkan.inTestBuffer.handle;
-    bufferBarriers[1].offset = 0;
-    bufferBarriers[1].size = VK_WHOLE_SIZE ;
     
     vkCmdPipelineBarrier(vulkan.cmdBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, 0, ArrayCount(bufferBarriers), bufferBarriers, 0, 0);
     
@@ -448,70 +423,92 @@ UploadInputData(void *testData, void *trainData)
     
     vkQueueWaitIdle(vulkan.computeQueue);
     
-    ClearBuffer(trainStagingBuffer);
-    ClearBuffer(testStagingBuffer);
+    ClearBuffer(inputStagingBuffer);
     
     return true;
 }
 
 func bool Vulkan::
-AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **outBiases, f32 **outValues)
+AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **outBiases, f32 **outValues, f32 **outWeightedVals)
 {
     Assert(nLayers >= 3);
     
-    u64 valuesSize = 0;
+    u64 valuesSize = (NUM_TRAIN_IMAGES + NUM_TEST_IMAGES) * PIXELS_PER_IMAGE;
+    u64 biasesSize = 0;
+    u64 weightsSize = 0;
     u64 weightedValsSize = 0;
-    u64 maxWeightedValsSize = 0;
+    
     for (u32 i = 1; i < nLayers; i++)
     {
-        weightedValsSize = layersDims[i] * layersDims[i-1];
-        if (weightedValsSize > maxWeightedValsSize)
-            maxWeightedValsSize = weightedValsSize;
         valuesSize += layersDims[i];
+        biasesSize += layersDims[i];
+        weightsSize += layersDims[i] * layersDims[i-1];
+        u64 count = layersDims[i] * layersDims[i-1] * layersDims[i-1];
+        if (count > weightedValsSize)
+            weightedValsSize = count;
     }
     valuesSize *= sizeof(f32);
-    maxWeightedValsSize *= sizeof(f32);
+    weightedValsSize *= sizeof(f32);
+    biasesSize *= sizeof(f32);
+    weightsSize *= sizeof(f32);
+    
+    // NOTE(heyyod): The weighted vals buffer is recyclable, meaning we constatly save the product
+    // values of a layer given the weights of the next layer. After that we sum them in the weightsBuffer
     
     if (CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, valuesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.valuesBuffer, true) &&
-        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, valuesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.biasesBuffer, true) &&
-        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, valuesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.weightsBuffer, true) &&
-        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, maxWeightedValsSize, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vulkan.weightedValsBuffer, false))
+        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, biasesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.biasesBuffer, true) &&
+        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, weightsSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.weightsBuffer, true) &&
+        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, weightedValsSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.weightedValsBuffer, true))
     {
         *outWeights = (f32 *)vulkan.weightsBuffer.data;
         *outBiases = (f32 *)vulkan.biasesBuffer.data;
         *outValues = (f32 *)vulkan.valuesBuffer.data;
+        *outWeightedVals = (f32 *)vulkan.weightedValsBuffer.data;
         return true;
     }
     return false;
 }
 
 func bool Vulkan::
-CreatePipeline(pipeline_type pipelineType, u32 **distPerImgData, u64 &distPerImgDataSize)
+AllocateKnnMemory(u32 **distPerImgData, u64 &distPerImgDataSize)
 {
-    ClearPipeline();
+    u64 distPerPixelDataSize = NUM_TRAIN_IMAGES * PIXELS_PER_IMAGE * sizeof(u32);
+    distPerImgDataSize = NUM_TRAIN_IMAGES * sizeof(u32);
+    
+    // NOTE(heyyod): Create buffer for the input and output data
+    if (CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, distPerPixelDataSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.distPerPixelBuffer, true) &&
+        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, distPerImgDataSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.distPerImgBuffer, true))
+    {
+        *distPerImgData = (u32 *)vulkan.distPerImgBuffer.data;
+        return true;
+    }
+    return false;
+}
+
+func bool Vulkan::
+CreatePipeline(pipeline_type pipelineType)
+{
+    if (VulkanIsValidHandle(vulkan.pipelines[pipelineType].handle))
+        return true;
     
     VkShaderModule compShader = {};
     bool loadedShader = false;
+    
+    VkPushConstantRange pushConstant;
+    pushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstant.offset = 0;
+    
     switch (pipelineType)
     {
-        case PIPELINE_NEAREST_NEIGHBOUR:
+        case PIPELINE_TYPE_NEAREST_NEIGHBOUR:
         {
-            u64 distPerPixelDataSize = TRAIN_NUM_IMAGES * PIXELS_PER_IMAGE * sizeof(u32);
-            distPerImgDataSize = TRAIN_NUM_IMAGES * sizeof(u32);
-            
-            // NOTE(heyyod): Create buffer for the input and output data
-            if (CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, distPerPixelDataSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.distPerPixelBuffer, true) &&
-                CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, distPerImgDataSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.distPerImgBuffer, true))
-            {
-                *distPerImgData = (u32 *)vulkan.distPerImgBuffer.data;
-            }
-            
+            // TODO(heyyod): I MADE THE INPUT A SINGLE BUFFER FOR TRAIN AND TEST DATA
+            // HAVE NOT TESTED IF K-NN STILL WORKS
             // NOTE(heyyod): Create shader bindings
             VkDescriptorSetLayoutBinding bindings[] = {
                 {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0},
                 {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0},
                 {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0},
-                {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0},
             };
             
             VkDescriptorSetLayoutCreateInfo layoutInfo = {};
@@ -538,29 +535,17 @@ CreatePipeline(pipeline_type pipelineType, u32 **distPerImgData, u64 &distPerImg
             globalDescAlloc.pSetLayouts = &vulkan.globalDescSetLayout;
             AssertSuccess(vkAllocateDescriptorSets(vulkan.device, &globalDescAlloc, &vulkan.globalDescSet));
             
-            VkDescriptorBufferInfo trainBufferInfo = {};
-            trainBufferInfo.buffer = vulkan.inTrainBuffer.handle;
-            trainBufferInfo.range = VK_WHOLE_SIZE;
-            VkWriteDescriptorSet writeTrainBuffer = {};
-            writeTrainBuffer.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writeTrainBuffer.dstSet = vulkan.globalDescSet;
-            writeTrainBuffer.dstArrayElement = 0;
-            writeTrainBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writeTrainBuffer.descriptorCount = 1;
-            writeTrainBuffer.dstBinding = 0;
-            writeTrainBuffer.pBufferInfo = &trainBufferInfo;
-            
-            VkDescriptorBufferInfo testBufferInfo = {};
-            testBufferInfo.buffer = vulkan.inTestBuffer.handle;
-            testBufferInfo.range = VK_WHOLE_SIZE;
-            VkWriteDescriptorSet writeTestBuffer = {};
-            writeTestBuffer.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writeTestBuffer.dstSet = vulkan.globalDescSet;
-            writeTestBuffer.dstArrayElement = 0;
-            writeTestBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writeTestBuffer.descriptorCount = 1;
-            writeTestBuffer.dstBinding = 1;
-            writeTestBuffer.pBufferInfo = &testBufferInfo;
+            VkDescriptorBufferInfo inputBufferInfo = {};
+            inputBufferInfo.buffer = vulkan.valuesBuffer.handle;
+            inputBufferInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet writeInputBuffer = {};
+            writeInputBuffer.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writeInputBuffer.dstSet = vulkan.globalDescSet;
+            writeInputBuffer.dstArrayElement = 0;
+            writeInputBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writeInputBuffer.descriptorCount = 1;
+            writeInputBuffer.dstBinding = 0;
+            writeInputBuffer.pBufferInfo = &inputBufferInfo;
             
             VkDescriptorBufferInfo diffPerPixelBufferInfo = {};
             diffPerPixelBufferInfo.buffer = vulkan.distPerPixelBuffer.handle;
@@ -571,7 +556,7 @@ CreatePipeline(pipeline_type pipelineType, u32 **distPerImgData, u64 &distPerImg
             writeDiffPerPixelBuffer.dstArrayElement = 0;
             writeDiffPerPixelBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writeDiffPerPixelBuffer.descriptorCount = 1;
-            writeDiffPerPixelBuffer.dstBinding = 2;
+            writeDiffPerPixelBuffer.dstBinding = 1;
             writeDiffPerPixelBuffer.pBufferInfo = &diffPerPixelBufferInfo;
             
             VkDescriptorBufferInfo distPerImgBufferInfo = {};
@@ -583,25 +568,117 @@ CreatePipeline(pipeline_type pipelineType, u32 **distPerImgData, u64 &distPerImg
             writeDistPerImgBuffer.dstArrayElement = 0;
             writeDistPerImgBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writeDistPerImgBuffer.descriptorCount = 1;
-            writeDistPerImgBuffer.dstBinding = 3;
+            writeDistPerImgBuffer.dstBinding = 2;
             writeDistPerImgBuffer.pBufferInfo = &distPerImgBufferInfo;
             
             VkWriteDescriptorSet writeSets[] = {
-                writeTrainBuffer,
-                writeTestBuffer,
+                writeInputBuffer,
                 writeDiffPerPixelBuffer,
                 writeDistPerImgBuffer
             };
             
             vkUpdateDescriptorSets(vulkan.device, ArrayCount(writeSets), writeSets, 0, 0);
             
+            pushConstant.size = sizeof(push_constants_knn);
+            
             loadedShader = LoadShader("..\\build\\shaders\\NearestNeighbour.comp.spv", &compShader);
         }break;
         
-        case PIPELINE_NEURAL_NET:
+        case PIPELINE_TYPE_FEED_FORWARD:
         {
+            // NOTE(heyyod): Create shader bindings
+            VkDescriptorSetLayoutBinding bindings[] = {
+                {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0},
+                {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0},
+                {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0},
+                {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0},
+                {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0},
+            };
             
-            loadedShader = LoadShader("..\\build\\shaders\\NearestNeighbour.comp.spv", &compShader);
+            VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+            layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            layoutInfo.bindingCount = ArrayCount(bindings);
+            layoutInfo.pBindings = bindings;
+            AssertSuccess(vkCreateDescriptorSetLayout(vulkan.device, &layoutInfo, 0, &vulkan.globalDescSetLayout));
+            
+            VkDescriptorPoolSize poolSizes[] = {
+                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ArrayCount(bindings)},
+            };
+            
+            VkDescriptorPoolCreateInfo poolInfo = {};
+            poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            poolInfo.poolSizeCount = ArrayCount(poolSizes);
+            poolInfo.pPoolSizes = poolSizes;
+            poolInfo.maxSets = 1;
+            AssertSuccess(vkCreateDescriptorPool(vulkan.device, &poolInfo, 0, &vulkan.globalDescPool));
+            
+            VkDescriptorSetAllocateInfo globalDescAlloc = {};
+            globalDescAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            globalDescAlloc.descriptorPool = vulkan.globalDescPool;
+            globalDescAlloc.descriptorSetCount = 1;
+            globalDescAlloc.pSetLayouts = &vulkan.globalDescSetLayout;
+            AssertSuccess(vkAllocateDescriptorSets(vulkan.device, &globalDescAlloc, &vulkan.globalDescSet));
+            
+            VkDescriptorBufferInfo inputBufferInfo = {};
+            inputBufferInfo.buffer = vulkan.valuesBuffer.handle;
+            inputBufferInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet inputBuffer = {};
+            inputBuffer.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            inputBuffer.dstSet = vulkan.globalDescSet;
+            inputBuffer.dstArrayElement = 0;
+            inputBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            inputBuffer.descriptorCount = 1;
+            inputBuffer.dstBinding = 0;
+            inputBuffer.pBufferInfo = &inputBufferInfo;
+            
+            VkDescriptorBufferInfo weightsBufferInfo = {};
+            weightsBufferInfo.buffer = vulkan.weightsBuffer.handle;
+            weightsBufferInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet weightsBuffer = {};
+            weightsBuffer.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            weightsBuffer.dstSet = vulkan.globalDescSet;
+            weightsBuffer.dstArrayElement = 0;
+            weightsBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            weightsBuffer.descriptorCount = 1;
+            weightsBuffer.dstBinding = 1;
+            weightsBuffer.pBufferInfo = &weightsBufferInfo;
+            
+            VkDescriptorBufferInfo biasesBufferInfo = {};
+            biasesBufferInfo.buffer = vulkan.biasesBuffer.handle;
+            biasesBufferInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet biasesBuffer = {};
+            biasesBuffer.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            biasesBuffer.dstSet = vulkan.globalDescSet;
+            biasesBuffer.dstArrayElement = 0;
+            biasesBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            biasesBuffer.descriptorCount = 1;
+            biasesBuffer.dstBinding = 2;
+            biasesBuffer.pBufferInfo = &biasesBufferInfo;
+            
+            VkDescriptorBufferInfo weightedValsBufferInfo = {};
+            weightedValsBufferInfo.buffer = vulkan.weightedValsBuffer.handle;
+            weightedValsBufferInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet weightedValsBuffer = {};
+            weightedValsBuffer.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            weightedValsBuffer.dstSet = vulkan.globalDescSet;
+            weightedValsBuffer.dstArrayElement = 0;
+            weightedValsBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            weightedValsBuffer.descriptorCount = 1;
+            weightedValsBuffer.dstBinding = 3;
+            weightedValsBuffer.pBufferInfo = &weightedValsBufferInfo;
+            
+            VkWriteDescriptorSet writeSets[] = {
+                inputBuffer,
+                weightsBuffer,
+                biasesBuffer,
+                weightedValsBuffer
+            };
+            
+            vkUpdateDescriptorSets(vulkan.device, ArrayCount(writeSets), writeSets, 0, 0);
+            
+            pushConstant.size = sizeof(push_constants_feed_forward);
+            
+            loadedShader = LoadShader("..\\build\\shaders\\FeedForward.comp.spv", &compShader);
         }break;
     }
     
@@ -617,24 +694,19 @@ CreatePipeline(pipeline_type pipelineType, u32 **distPerImgData, u64 &distPerImg
     shaderStageCreateInfo.module = compShader;
     shaderStageCreateInfo.pName = "main";
     
-    VkPushConstantRange pushConstant;
-    pushConstant.offset = 0;
-    pushConstant.size = 2 * sizeof(u32);
-    pushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &vulkan.globalDescSetLayout ;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
-    AssertSuccess(vkCreatePipelineLayout(vulkan.device, &pipelineLayoutInfo, 0, &vulkan.pipeline.layout));
+    AssertSuccess(vkCreatePipelineLayout(vulkan.device, &pipelineLayoutInfo, 0, &vulkan.pipelines[pipelineType].layout));
     
     VkComputePipelineCreateInfo pipelineCreateInfo = {};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineCreateInfo.stage = shaderStageCreateInfo;
-    pipelineCreateInfo.layout = vulkan.pipeline.layout;
-    AssertSuccess(vkCreateComputePipelines(vulkan.device, 0, 1, &pipelineCreateInfo, 0, &vulkan.pipeline.handle));
+    pipelineCreateInfo.layout = vulkan.pipelines[pipelineType].layout;
+    AssertSuccess(vkCreateComputePipelines(vulkan.device, 0, 1, &pipelineCreateInfo, 0, &vulkan.pipelines[pipelineType].handle));
     DebugPrint("Created Pipeline\n");
     
     vkDestroyShaderModule(vulkan.device, compShader, 0);
@@ -642,24 +714,24 @@ CreatePipeline(pipeline_type pipelineType, u32 **distPerImgData, u64 &distPerImg
 }
 
 func bool Vulkan::
-Compute(u32 &testImageIndex, u32 distP)
+KnnCompute(u32 &testImageIndex, u32 distP)
 {
     // NOTE(heyyod): In glsl the u8 array is "casted" to a uint array, so
     // each element of the array contains 4 pixels. This means that in one invocation
     // we operate on 4 pixels and so we need 784/4=196 invocations per image.
     // So the total number of workgroups is the number of images we test against. 
-    u32 groupCount = TRAIN_NUM_IMAGES;
+    u32 groupCount = NUM_TRAIN_IMAGES;
     
-    push_constants pc  = {};
+    push_constants_knn pc  = {};
     pc.testId = testImageIndex;
     
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     AssertSuccess(vkBeginCommandBuffer(vulkan.cmdBuffer, &beginInfo));
-    vkCmdBindPipeline(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipeline.handle);
-    vkCmdBindDescriptorSets(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipeline.layout, 0, 1, &vulkan.globalDescSet, 0, 0);
-    vkCmdPushConstants(vulkan.cmdBuffer, vulkan.pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_constants), &pc);
+    vkCmdBindPipeline(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipelines[PIPELINE_TYPE_NEAREST_NEIGHBOUR].handle);
+    vkCmdBindDescriptorSets(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipelines[PIPELINE_TYPE_NEAREST_NEIGHBOUR].layout, 0, 1, &vulkan.globalDescSet, 0, 0);
+    vkCmdPushConstants(vulkan.cmdBuffer, vulkan.pipelines[PIPELINE_TYPE_NEAREST_NEIGHBOUR].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     vkCmdDispatch(vulkan.cmdBuffer, groupCount, 1, 1);
     AssertSuccess(vkEndCommandBuffer(vulkan.cmdBuffer));
     
@@ -669,6 +741,77 @@ Compute(u32 &testImageIndex, u32 distP)
     submitInfo.pCommandBuffers = &vulkan.cmdBuffer;
     AssertSuccess(vkQueueSubmit(vulkan.computeQueue, 1, &submitInfo, 0));
     AssertSuccess(vkQueueWaitIdle(vulkan.computeQueue));
+    return true;
+}
+
+func bool Vulkan::
+FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex, u32 outValuesIndex, u32 outValuesDim)
+{
+    u32 totalInvocations = inValuesDim * weightsDim * outValuesDim;
+    u32 totalGroupCount = totalInvocations / 265;
+    if (totalGroupCount == 0)
+        totalGroupCount = totalInvocations;
+    else
+    {
+        while (totalGroupCount * 256 < totalInvocations)
+        {
+            totalGroupCount++;
+        }
+    }
+    
+    u32 maxGroupCount = vulkan.gpuProperties.limits.maxComputeWorkGroupCount[0];
+    u32 batches = totalGroupCount / maxGroupCount;
+    
+    u32 groupCount;
+    if (batches == 0)
+    {
+        groupCount = totalGroupCount;
+        batches = 1;
+    }
+    else
+    {
+        if (totalGroupCount % maxGroupCount > 0)
+            batches++;
+        groupCount = vulkan.gpuProperties.limits.maxComputeWorkGroupCount[0];
+        
+        while (groupCount * batches * 256 < totalInvocations)
+            batches++;
+        
+        while (groupCount * batches * 256 > totalInvocations)
+            groupCount--;
+        groupCount++;
+    }
+    
+    push_constants_feed_forward pc = {};
+    pc.inValuesIndex = inValuesIndex;
+    pc.inValuesDim = inValuesDim;
+    pc.weightsIndex = weightsIndex;
+    pc.weightsDim = weightsDim;
+    pc.biasesIndex = biasesIndex;
+    pc.outValuesIndex = outValuesIndex;
+    pc.outValuesDim = outValuesDim;
+    
+    for (u32 batch = 0; batch < batches; batch++)
+    {
+        pc.batch = batch;
+        
+        VkCommandBufferBeginInfo beginInfo = {};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        AssertSuccess(vkBeginCommandBuffer(vulkan.cmdBuffer, &beginInfo));
+        vkCmdBindPipeline(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipelines[PIPELINE_TYPE_FEED_FORWARD].handle);
+        vkCmdBindDescriptorSets(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipelines[PIPELINE_TYPE_FEED_FORWARD].layout, 0, 1, &vulkan.globalDescSet, 0, 0);
+        vkCmdPushConstants(vulkan.cmdBuffer, vulkan.pipelines[PIPELINE_TYPE_FEED_FORWARD].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+        vkCmdDispatch(vulkan.cmdBuffer, groupCount, 1, 1);
+        AssertSuccess(vkEndCommandBuffer(vulkan.cmdBuffer));
+        
+        VkSubmitInfo submitInfo = {};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &vulkan.cmdBuffer;
+        AssertSuccess(vkQueueSubmit(vulkan.computeQueue, 1, &submitInfo, 0));
+        AssertSuccess(vkQueueWaitIdle(vulkan.computeQueue));
+    }
     return true;
 }
 
@@ -723,26 +866,35 @@ LoadShader(char *filepath, VkShaderModule *shaderOut)
 }
 
 func void Vulkan::
-ClearPipeline()
+ClearPipelinesAndStorageBuffers()
 {
     if(VulkanIsValidHandle(vulkan.device))
     {
         vkDeviceWaitIdle(vulkan.device);
-        if (VulkanIsValidHandle(vulkan.pipeline.handle))
-        {
-            vkDestroyPipeline(vulkan.device, vulkan.pipeline.handle, 0);
-            DebugPrint("Cleared Pipeline\n");
-        }
         
-        if (VulkanIsValidHandle(vulkan.pipeline.layout))
+        for (u32 i = 0; i < PIPEPLINE_TYPE_COUNT; i++)
         {
-            vkDestroyPipelineLayout(vulkan.device, vulkan.pipeline.layout, 0);
+            if (VulkanIsValidHandle(vulkan.pipelines[i].handle))
+            {
+                vkDestroyPipeline(vulkan.device, vulkan.pipelines[i].handle, 0);
+                DebugPrint("Cleared Pipeline\n");
+            }
+            
+            if (VulkanIsValidHandle(vulkan.pipelines[i].layout))
+            {
+                vkDestroyPipelineLayout(vulkan.device, vulkan.pipelines[i].layout, 0);
+            }
         }
         
         if(VulkanIsValidHandle(vulkan.globalDescSetLayout))
             vkDestroyDescriptorSetLayout(vulkan.device, vulkan.globalDescSetLayout, 0);
         if(VulkanIsValidHandle(vulkan.globalDescPool))
             vkDestroyDescriptorPool(vulkan.device, vulkan.globalDescPool, 0);
+        
+        ClearBuffer(vulkan.weightsBuffer);
+        ClearBuffer(vulkan.biasesBuffer);
+        ClearBuffer(vulkan.valuesBuffer);
+        ClearBuffer(vulkan.weightedValsBuffer);
         ClearBuffer(vulkan.distPerPixelBuffer);
         ClearBuffer(vulkan.distPerImgBuffer);
     }
@@ -814,10 +966,9 @@ Destroy()
     {
         vkDeviceWaitIdle(vulkan.device);
         
-        ClearPipeline();
+        ClearPipelinesAndStorageBuffers();
         
-        ClearBuffer(vulkan.inTrainBuffer);
-        ClearBuffer(vulkan.inTestBuffer);
+        ClearBuffer(vulkan.valuesBuffer);
         ClearBuffer(vulkan.weightsBuffer);
         ClearBuffer(vulkan.biasesBuffer);
         ClearBuffer(vulkan.valuesBuffer);

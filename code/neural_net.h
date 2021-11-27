@@ -11,14 +11,11 @@ struct perceptron
 
 struct layer
 {
-    u32 weightsIndex;
-    u32 weightsDim;
-    union
-    {
-        u32 biasesIndex;
-        u32 valuesIndex;
-    };
-    u32 dimension;
+    u32 valuesIndex;  // index in the values buffer
+    u32 biasesIndex;  // index in the biases buffer
+    u32 weightsIndex; // index in the weights buffer
+    u32 weightsDim;   // previous layer dim
+    u32 dimension;    // number of neurons in this layer
     u32 depth;
 };
 

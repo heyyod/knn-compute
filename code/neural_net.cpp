@@ -3,22 +3,40 @@
 #include <stdlib.h>
 #define RandomFloat0to1() (0.01f*(f32)(rand() % 101))
 
+f32 *testWV;
+
 func bool
-CreateNeuralNet(u32* layersDims, u32 nLayers, neural_net outNet)
+CreateNeuralNet(u32* layersDims, u32 nLayers, neural_net &net, image_data trainData, image_data testData)
 {
-    outNet.nLayers = nLayers;
-    outNet.layers = (layer *)malloc(nLayers * sizeof(layer));
-    if (!Vulkan::AllocateNeuralNetMemory(layersDims, nLayers, &outNet.weights, &outNet.biases, &outNet.values))
+    net.nLayers = nLayers;
+    net.layers = (layer *)malloc(nLayers * sizeof(layer));
+    if (!Vulkan::AllocateNeuralNetMemory(layersDims, nLayers, &net.weights, &net.biases, &net.values, &testWV) ||
+        !Vulkan::CreatePipeline(PIPELINE_TYPE_FEED_FORWARD))
         return false;
     
-    outNet.layers[0].dimension= layersDims[0];
-    outNet.layers[0].depth = 0;
-    outNet.layers[1].weightsIndex = 0;
-    outNet.layers[1].valuesIndex= 0;
+    // NOTE(heyyod): Normalize the input data
+    for (u32 i = 0; i < NUM_TRAIN_IMAGES; i++)
+    {
+        net.values[i] = (f32)trainData.pixels[i] / 255.0f;
+    }
+    for (u32 i = NUM_TRAIN_IMAGES; i < NUM_TRAIN_IMAGES + NUM_TEST_IMAGES; i++)
+    {
+        net.values[i] = (f32)testData.pixels[i] / 255.0f;
+    }
+    
+    net.layers[0].dimension= layersDims[0];
+    net.layers[0].depth = 0;
+    net.layers[0].valuesIndex = 0;
+    // biasesIndex & weightsIndex are ignored for layer[0] -> input layer
+    
+    net.layers[1].valuesIndex = NUM_TRAIN_IMAGES + NUM_TEST_IMAGES;
+    net.layers[1].biasesIndex = 0;
+    net.layers[1].weightsIndex = 0;
+    
     for (u32 i = 1; i < nLayers; i++)
     {
-        layer &prev = outNet.layers[i-1];
-        layer &curr = outNet.layers[i];
+        layer &prev = net.layers[i-1];
+        layer &curr = net.layers[i];
         
         curr.depth = i;
         curr.dimension = layersDims[i];
@@ -26,22 +44,24 @@ CreateNeuralNet(u32* layersDims, u32 nLayers, neural_net outNet)
         
         if (i > 1)
         {
-            curr.weightsIndex = prev.weightsIndex + prev.dimension * prev.weightsDim;
             curr.valuesIndex = prev.valuesIndex + prev.dimension;
+            curr.biasesIndex = prev.biasesIndex + prev.dimension;
+            curr.weightsIndex = prev.weightsIndex + prev.dimension * prev.weightsDim;
         }
         
         // NOTE(heyyod): Randomize weights and biases
         for (u32 j = 0; j < curr.dimension; j++)
         {
-            outNet.biases[curr.biasesIndex + j] = RandomFloat0to1();
+            net.biases[curr.biasesIndex + j] = RandomFloat0to1();
             for (u32 k = 0; k < curr.weightsDim; k++)
             {
-                outNet.weights[curr.weightsIndex + k] = RandomFloat0to1();
+                net.weights[curr.weightsIndex + k] = RandomFloat0to1();
             }
         }
     }
     return true;
 }
+
 // TODO(heyyod): Save and Load Neural Net functions
 
 func void
@@ -51,18 +71,35 @@ FreeNeuralNet(neural_net &net)
 }
 
 func void
-FeedForward(neural_net &net)
-{
-    
-}
-
-func void
 BackPropagate()
 {
     
 }
 
 func void
-Train()
+TrainNeuralNet(neural_net &net)
 {
+    for (u32 iTrain  = 0; iTrain < NUM_TRAIN_IMAGES; iTrain++)
+    {
+        for (u32 iLayer = 0; iLayer < net.nLayers - 1; iLayer++)
+        {
+            u32 inValuesIndex = net.layers[iLayer].valuesIndex;
+            if (iLayer == 0)
+            {
+                inValuesIndex+= iTrain * PIXELS_PER_IMAGE;
+            }
+            u32 inValuesDim = net.layers[iLayer].dimension;
+            
+            u32 weightsIndex = net.layers[iLayer + 1].weightsIndex;
+            u32 weightsDim = net.layers[iLayer + 1].weightsDim;
+            
+            u32 biasesIndex = net.layers[iLayer + 1].biasesIndex;
+            
+            u32 outValuesIndex = net.layers[iLayer + 1].valuesIndex;
+            u32 outValuesDim = net.layers[iLayer + 1].dimension;
+            
+            Vulkan::FeedForwardCompute(inValuesIndex, inValuesDim, weightsIndex, weightsDim, biasesIndex, outValuesIndex, outValuesDim);
+        }
+    }
 }
+

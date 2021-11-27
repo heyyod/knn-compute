@@ -2,15 +2,14 @@
 
 #define PIXELS_PER_IMAGE 784 //28*28
 #define ARRAY_ELEMENTS_PER_IMAGE (PIXELS_PER_IMAGE / 4)
-
+#define NUM_TRAIN_IMAGES 60000
 #define MaskAndShiftRight(val, mask, shift) ((val & mask) >> shift)
 
 layout (local_size_x = ARRAY_ELEMENTS_PER_IMAGE) in;
 
-layout(std430, set=0, binding=0) readonly buffer trainBuffer { uint train[]; };
-layout(std430, set=0, binding=1) readonly buffer testBuffer { uint test[]; };
-layout(std430, set=0, binding=2) buffer distPerPxlBuffer { uint pxlDist[]; };
-layout(std430, set=0, binding=3) coherent buffer distPerImgBuffer { uint imgDist[]; };
+layout(std430, set=0, binding=0) readonly buffer inputBuffer { uint inputImg[]; };
+layout(std430, set=0, binding=1) buffer distPerPxlBuffer { uint pxlDist[]; };
+layout(std430, set=0, binding=2) coherent buffer distPerImgBuffer { uint imgDist[]; };
 
 layout( push_constant ) uniform constants
 {
@@ -29,16 +28,16 @@ void main()
     // NOTE(heyyod): Pixels are stored in an array of bytes so we need to seperate the uint
     // into 4 seperate values and operate on them seperately.
     uint iTrain = gl_GlobalInvocationID.x;
-    uint iTest = mod_u32(iTrain, ARRAY_ELEMENTS_PER_IMAGE) + pushConstants.testId * ARRAY_ELEMENTS_PER_IMAGE;
+    uint iTest = NUM_TRAIN_IMAGES + mod_u32(iTrain, ARRAY_ELEMENTS_PER_IMAGE) + pushConstants.testId * ARRAY_ELEMENTS_PER_IMAGE;
     uint iDist = iTrain / ARRAY_ELEMENTS_PER_IMAGE;
     
-    uint trainPixels = train[iTrain];
+    uint trainPixels = inputImg[iTrain];
     uint trainPixel0 = MaskAndShiftRight(trainPixels, 0x000000FF, 0);
     uint trainPixel1 = MaskAndShiftRight(trainPixels, 0x0000FF00, 8);
     uint trainPixel2 = MaskAndShiftRight(trainPixels, 0x00FF0000, 16);
     uint trainPixel3 = MaskAndShiftRight(trainPixels, 0xFF000000, 24);
     
-    uint testPixels = test[iTest];
+    uint testPixels = inputImg[iTest];
     uint testPixel0 = MaskAndShiftRight(testPixels, 0x000000FF, 0);
     uint testPixel1 = MaskAndShiftRight(testPixels, 0x0000FF00, 8);
     uint testPixel2 = MaskAndShiftRight(testPixels, 0x00FF0000, 16);
