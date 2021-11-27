@@ -41,12 +41,19 @@ struct push_constants_feed_forward
     u32 outValuesIndex;
     u32 outValuesDim;
     u32 batch;
+    u32 maxBatches;
+};
+
+struct push_constants_back_propagate
+{
+    
 };
 
 enum pipeline_type
 {
     PIPELINE_TYPE_NEAREST_NEIGHBOUR,
     PIPELINE_TYPE_FEED_FORWARD,
+    PIPELINE_TYPE_BACK_PROPAGATE,
     
     PIPEPLINE_TYPE_COUNT
 };
@@ -69,12 +76,11 @@ struct vulkan_engine
     
     vulkan_pipeline pipelines[PIPEPLINE_TYPE_COUNT];
     
-    // NOTE(heyyod): Input data and neurons' out values buffers
-    vulkan_buffer valuesBuffer;
-    
     // NOTE(heyyod): Neural network buffers
+    vulkan_buffer valuesBuffer; // Input data and neurons' out values buffers
     vulkan_buffer weightsBuffer;
     vulkan_buffer biasesBuffer;
+    vulkan_buffer errorsBuffer;
     
     // weightedValsBuffer is used as a temp buffer to calculate the products w_i * x_i.
     // Their sum goes to the values buffer

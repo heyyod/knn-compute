@@ -55,7 +55,7 @@ CreateNeuralNet(u32* layersDims, u32 nLayers, neural_net &net, image_data trainD
             net.biases[curr.biasesIndex + j] = RandomFloat0to1();
             for (u32 k = 0; k < curr.weightsDim; k++)
             {
-                net.weights[curr.weightsIndex + k] = RandomFloat0to1();
+                net.weights[curr.weightsIndex + curr.weightsDim * j + k] = RandomFloat0to1();
             }
         }
     }
@@ -71,35 +71,48 @@ FreeNeuralNet(neural_net &net)
 }
 
 func void
+FeedForward(neural_net &net, u32 iTrain)
+{
+    for (u32 iLayer = 0; iLayer < net.nLayers - 1; iLayer++)
+    {
+        u32 inValuesIndex = net.layers[iLayer].valuesIndex;
+        if (iLayer == 0)
+        {
+            inValuesIndex+= iTrain * net.layers[0].dimension;
+        }
+        u32 inValuesDim = net.layers[iLayer].dimension;
+        
+        u32 weightsIndex = net.layers[iLayer + 1].weightsIndex;
+        u32 weightsDim = net.layers[iLayer + 1].weightsDim;
+        
+        u32 biasesIndex = net.layers[iLayer + 1].biasesIndex;
+        
+        u32 outValuesIndex = net.layers[iLayer + 1].valuesIndex;
+        u32 outValuesDim = net.layers[iLayer + 1].dimension;
+        
+        Vulkan::FeedForwardCompute(inValuesIndex, inValuesDim, weightsIndex, weightsDim, biasesIndex, outValuesIndex, outValuesDim);
+    }
+}
+
+func void
 BackPropagate()
 {
     
 }
 
 func void
-TrainNeuralNet(neural_net &net)
+TrainNeuralNet(neural_net &net, image_data &trainData)
 {
     for (u32 iTrain  = 0; iTrain < NUM_TRAIN_IMAGES; iTrain++)
     {
-        for (u32 iLayer = 0; iLayer < net.nLayers - 1; iLayer++)
-        {
-            u32 inValuesIndex = net.layers[iLayer].valuesIndex;
-            if (iLayer == 0)
-            {
-                inValuesIndex+= iTrain * PIXELS_PER_IMAGE;
-            }
-            u32 inValuesDim = net.layers[iLayer].dimension;
-            
-            u32 weightsIndex = net.layers[iLayer + 1].weightsIndex;
-            u32 weightsDim = net.layers[iLayer + 1].weightsDim;
-            
-            u32 biasesIndex = net.layers[iLayer + 1].biasesIndex;
-            
-            u32 outValuesIndex = net.layers[iLayer + 1].valuesIndex;
-            u32 outValuesDim = net.layers[iLayer + 1].dimension;
-            
-            Vulkan::FeedForwardCompute(inValuesIndex, inValuesDim, weightsIndex, weightsDim, biasesIndex, outValuesIndex, outValuesDim);
-        }
+        FeedForward(net, iTrain);
+        
+        f32 *output = OutputLayerValues(net);
+        f32 target[10] = {};
+        target[trainData.labels[iTrain]] = 1.0f;
+        f32 outputErrors[10] = {};
+        for (u32 i = 0; i < 10; i++)
+            outputErrors[i] = target[i] - output[i];
     }
 }
 

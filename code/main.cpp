@@ -30,7 +30,7 @@ int main()
         Print("---- Hardware Acceleration With Vulkan Enabled ----\n");
         if (CreateNeuralNet(layerDims, ArrayCount(layerDims), net, trainData, testData))
         {
-            TrainNeuralNet(net);
+            TrainNeuralNet(net, trainData);
             Print("Created Neural Network\n");
         }
         

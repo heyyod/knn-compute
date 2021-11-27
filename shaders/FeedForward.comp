@@ -19,6 +19,7 @@ layout( push_constant ) uniform constants
     uint outValuesIndex;
     uint outValuesDim;
     uint batch;
+    uint maxBatches;
 } pushConstants;
 
 uint mod_u32( uint u32_bas , uint u32_div )
@@ -34,14 +35,14 @@ void main()
     if (wv >= pushConstants.inValuesDim * pushConstants.weightsDim * pushConstants.outValuesDim)
         return;
     
-    
     uint i = pushConstants.inValuesIndex + mod_u32(wv, pushConstants.weightsDim);
     uint w = pushConstants.weightsIndex + wv;
     weightedVals[wv] = values[i] * weights[w];
     
     barrier();
     
-    if (gl_GlobalInvocationID.x < pushConstants.outValuesDim)
+    if (pushConstants.batch == pushConstants.maxBatches - 1 &&
+        gl_GlobalInvocationID.x < pushConstants.outValuesDim)
     {
         uint b = pushConstants.biasesIndex + gl_GlobalInvocationID.x;
         uint o = pushConstants.outValuesIndex + gl_GlobalInvocationID.x;
@@ -49,7 +50,7 @@ void main()
         values[o] = 0.0f;
         for (uint i = 0; i < pushConstants.weightsDim; i++)
         {
-            values[o] += weightedVals[i + wv];
+            values[o] += weightedVals[i + gl_GlobalInvocationID.x * pushConstants.weightsDim];
         }
         values[o] += biases[b];
     }

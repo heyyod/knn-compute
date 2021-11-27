@@ -451,6 +451,7 @@ AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **ou
     weightedValsSize *= sizeof(f32);
     biasesSize *= sizeof(f32);
     weightsSize *= sizeof(f32);
+    u64 errorsSize = layersDims[nLayers - 1] * sizeof(f32);
     
     // NOTE(heyyod): The weighted vals buffer is recyclable, meaning we constatly save the product
     // values of a layer given the weights of the next layer. After that we sum them in the weightsBuffer
@@ -458,7 +459,8 @@ AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **ou
     if (CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, valuesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.valuesBuffer, true) &&
         CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, biasesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.biasesBuffer, true) &&
         CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, weightsSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.weightsBuffer, true) &&
-        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, weightedValsSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.weightedValsBuffer, true))
+        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, weightedValsSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.weightedValsBuffer, true) &&
+        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, errorsSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.errorsBuffer, true))
     {
         *outWeights = (f32 *)vulkan.weightsBuffer.data;
         *outBiases = (f32 *)vulkan.biasesBuffer.data;
@@ -675,10 +677,14 @@ CreatePipeline(pipeline_type pipelineType)
             };
             
             vkUpdateDescriptorSets(vulkan.device, ArrayCount(writeSets), writeSets, 0, 0);
-            
             pushConstant.size = sizeof(push_constants_feed_forward);
-            
             loadedShader = LoadShader("..\\build\\shaders\\FeedForward.comp.spv", &compShader);
+        }break;
+        
+        case PIPELINE_TYPE_BACK_PROPAGATE:
+        {
+            pushConstant.size = sizeof(push_constants_back_propagate);
+            loadedShader = LoadShader("..\\build\\shaders\\BackPropagate.comp.spv", &compShader);
         }break;
     }
     
@@ -779,7 +785,8 @@ FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 wei
         
         while (groupCount * batches * 256 > totalInvocations)
             groupCount--;
-        groupCount++;
+        while (groupCount * batches * 256 < totalInvocations)
+            groupCount++;
     }
     
     push_constants_feed_forward pc = {};
@@ -790,6 +797,7 @@ FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 wei
     pc.biasesIndex = biasesIndex;
     pc.outValuesIndex = outValuesIndex;
     pc.outValuesDim = outValuesDim;
+    pc.maxBatches = batches;
     
     for (u32 batch = 0; batch < batches; batch++)
     {

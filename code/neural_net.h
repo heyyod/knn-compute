@@ -5,10 +5,6 @@
 
 #include "data.h"
 
-struct perceptron
-{
-};
-
 struct layer
 {
     u32 valuesIndex;  // index in the values buffer
@@ -27,5 +23,8 @@ struct neural_net
     f32 *values;
     layer *layers;
 };
+
+#define LayerValues(net, l) (&net.values[net.layers[l].valuesIndex])
+#define OutputLayerValues(net) (&net.values[net.layers[net.nLayers-1].valuesIndex])
 
 #endif //NEURAL_NET_H
