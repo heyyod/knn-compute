@@ -10,7 +10,8 @@ namespace Vulkan
     
     func bool UploadInputData(void *testData, void *trainData);
     func bool AllocateKnnMemory(u32 **distPerImgData, u64 &distPerImgDataSize);
-    func bool AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **outBiases, f32 **outValues, f32 **outWeightedVals);
+    func bool AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **outBiases, f32 **outValues, f32 **outErrors, f32 **outProducts);
+    func void GetGroupCountAndBatches(u32 totalInvocations, u32 groupSize, u32 &groupCount, u32 &batches);
     
     func void ClearPipelinesAndStorageBuffers();
     func void ClearBuffer(vulkan_buffer &buffer);
@@ -18,6 +19,7 @@ namespace Vulkan
     
     func bool KnnCompute(u32 &testImageIndex, u32 distP);
     func bool FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex, u32 outValuesIndex, u32 outValuesDim);
+    func bool BackPropagateCompute(u32 inErrorsIndex, u32 inErrorsDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex, u32 outErrorsIndex, u32 outErrorsDim);
     
     func bool LoadShader(char *filepath, VkShaderModule *shaderOut);
     func bool FindMemoryProperties(u32 memoryType, VkMemoryPropertyFlags requiredProperties, u32 &memoryIndexOut);
@@ -429,14 +431,14 @@ UploadInputData(void *testData, void *trainData)
 }
 
 func bool Vulkan::
-AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **outBiases, f32 **outValues, f32 **outWeightedVals)
+AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **outBiases, f32 **outValues, f32 **outErrors, f32 **outProducts)
 {
     Assert(nLayers >= 3);
     
     u64 valuesSize = (NUM_TRAIN_IMAGES + NUM_TEST_IMAGES) * PIXELS_PER_IMAGE;
     u64 biasesSize = 0;
     u64 weightsSize = 0;
-    u64 weightedValsSize = 0;
+    u64 productsSize = 0;
     
     for (u32 i = 1; i < nLayers; i++)
     {
@@ -444,14 +446,14 @@ AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **ou
         biasesSize += layersDims[i];
         weightsSize += layersDims[i] * layersDims[i-1];
         u64 count = layersDims[i] * layersDims[i-1] * layersDims[i-1];
-        if (count > weightedValsSize)
-            weightedValsSize = count;
+        if (count > productsSize)
+            productsSize = count;
     }
     valuesSize *= sizeof(f32);
-    weightedValsSize *= sizeof(f32);
+    productsSize *= sizeof(f32);
     biasesSize *= sizeof(f32);
     weightsSize *= sizeof(f32);
-    u64 errorsSize = layersDims[nLayers - 1] * sizeof(f32);
+    u64 errorsSize = biasesSize;
     
     // NOTE(heyyod): The weighted vals buffer is recyclable, meaning we constatly save the product
     // values of a layer given the weights of the next layer. After that we sum them in the weightsBuffer
@@ -459,13 +461,15 @@ AllocateNeuralNetMemory(u32* layersDims, u32 nLayers, f32 **outWeights, f32 **ou
     if (CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, valuesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.valuesBuffer, true) &&
         CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, biasesSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.biasesBuffer, true) &&
         CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, weightsSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.weightsBuffer, true) &&
-        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, weightedValsSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.weightedValsBuffer, true) &&
+        CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, productsSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.productsBuffer, true) &&
         CreateBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, errorsSize, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vulkan.errorsBuffer, true))
     {
         *outWeights = (f32 *)vulkan.weightsBuffer.data;
         *outBiases = (f32 *)vulkan.biasesBuffer.data;
         *outValues = (f32 *)vulkan.valuesBuffer.data;
-        *outWeightedVals = (f32 *)vulkan.weightedValsBuffer.data;
+        *outErrors = (f32 *)vulkan.errorsBuffer.data;
+        *outProducts = (f32 *)vulkan.productsBuffer.data;
+        
         return true;
     }
     return false;
@@ -580,9 +584,7 @@ CreatePipeline(pipeline_type pipelineType)
             };
             
             vkUpdateDescriptorSets(vulkan.device, ArrayCount(writeSets), writeSets, 0, 0);
-            
             pushConstant.size = sizeof(push_constants_knn);
-            
             loadedShader = LoadShader("..\\build\\shaders\\NearestNeighbour.comp.spv", &compShader);
         }break;
         
@@ -657,23 +659,36 @@ CreatePipeline(pipeline_type pipelineType)
             biasesBuffer.dstBinding = 2;
             biasesBuffer.pBufferInfo = &biasesBufferInfo;
             
-            VkDescriptorBufferInfo weightedValsBufferInfo = {};
-            weightedValsBufferInfo.buffer = vulkan.weightedValsBuffer.handle;
-            weightedValsBufferInfo.range = VK_WHOLE_SIZE;
-            VkWriteDescriptorSet weightedValsBuffer = {};
-            weightedValsBuffer.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            weightedValsBuffer.dstSet = vulkan.globalDescSet;
-            weightedValsBuffer.dstArrayElement = 0;
-            weightedValsBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            weightedValsBuffer.descriptorCount = 1;
-            weightedValsBuffer.dstBinding = 3;
-            weightedValsBuffer.pBufferInfo = &weightedValsBufferInfo;
+            VkDescriptorBufferInfo productsBufferInfo = {};
+            productsBufferInfo.buffer = vulkan.productsBuffer.handle;
+            productsBufferInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet productsBuffer = {};
+            productsBuffer.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            productsBuffer.dstSet = vulkan.globalDescSet;
+            productsBuffer.dstArrayElement = 0;
+            productsBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            productsBuffer.descriptorCount = 1;
+            productsBuffer.dstBinding = 3;
+            productsBuffer.pBufferInfo = &productsBufferInfo;
+            
+            VkDescriptorBufferInfo errorsBufferInfo = {};
+            errorsBufferInfo.buffer = vulkan.errorsBuffer.handle;
+            errorsBufferInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet errorsBuffer = {};
+            errorsBuffer.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            errorsBuffer.dstSet = vulkan.globalDescSet;
+            errorsBuffer.dstArrayElement = 0;
+            errorsBuffer.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            errorsBuffer.descriptorCount = 1;
+            errorsBuffer.dstBinding = 4;
+            errorsBuffer.pBufferInfo = &errorsBufferInfo;
             
             VkWriteDescriptorSet writeSets[] = {
                 inputBuffer,
                 weightsBuffer,
                 biasesBuffer,
-                weightedValsBuffer
+                productsBuffer,
+                errorsBuffer
             };
             
             vkUpdateDescriptorSets(vulkan.device, ArrayCount(writeSets), writeSets, 0, 0);
@@ -683,6 +698,7 @@ CreatePipeline(pipeline_type pipelineType)
         
         case PIPELINE_TYPE_BACK_PROPAGATE:
         {
+            Assert(VulkanIsValidHandle(vulkan.pipelines[PIPELINE_TYPE_FEED_FORWARD].handle));
             pushConstant.size = sizeof(push_constants_back_propagate);
             loadedShader = LoadShader("..\\build\\shaders\\BackPropagate.comp.spv", &compShader);
         }break;
@@ -719,6 +735,44 @@ CreatePipeline(pipeline_type pipelineType)
     return true;
 }
 
+func void Vulkan::
+GetGroupCountAndBatches(u32 totalInvocations, u32 groupSize, u32 &groupCount, u32 &batches)
+{
+    u32 totalGroupCount = totalInvocations / groupSize;
+    if (totalGroupCount == 0)
+        totalGroupCount = totalInvocations;
+    else
+    {
+        while (totalGroupCount * groupSize < totalInvocations)
+        {
+            totalGroupCount++;
+        }
+    }
+    
+    u32 maxGroupCount = vulkan.gpuProperties.limits.maxComputeWorkGroupCount[0];
+    batches = totalGroupCount / maxGroupCount;
+    
+    if (batches == 0)
+    {
+        groupCount = totalGroupCount;
+        batches = 1;
+    }
+    else
+    {
+        if (totalGroupCount % maxGroupCount > 0)
+            batches++;
+        groupCount = vulkan.gpuProperties.limits.maxComputeWorkGroupCount[0];
+        
+        while (groupCount * batches * groupSize < totalInvocations)
+            batches++;
+        
+        while (groupCount * batches * groupSize > totalInvocations)
+            groupCount--;
+        while (groupCount * batches * groupSize < totalInvocations)
+            groupCount++;
+    }
+}
+
 func bool Vulkan::
 KnnCompute(u32 &testImageIndex, u32 distP)
 {
@@ -751,43 +805,13 @@ KnnCompute(u32 &testImageIndex, u32 distP)
 }
 
 func bool Vulkan::
-FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex, u32 outValuesIndex, u32 outValuesDim)
+FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 weightsDim,
+                   u32 biasesIndex, u32 outValuesIndex, u32 outValuesDim)
 {
-    u32 totalInvocations = inValuesDim * weightsDim * outValuesDim;
-    u32 totalGroupCount = totalInvocations / 265;
-    if (totalGroupCount == 0)
-        totalGroupCount = totalInvocations;
-    else
-    {
-        while (totalGroupCount * 256 < totalInvocations)
-        {
-            totalGroupCount++;
-        }
-    }
-    
-    u32 maxGroupCount = vulkan.gpuProperties.limits.maxComputeWorkGroupCount[0];
-    u32 batches = totalGroupCount / maxGroupCount;
-    
+    u32 totalInvocations = inValuesDim * outValuesDim;
     u32 groupCount;
-    if (batches == 0)
-    {
-        groupCount = totalGroupCount;
-        batches = 1;
-    }
-    else
-    {
-        if (totalGroupCount % maxGroupCount > 0)
-            batches++;
-        groupCount = vulkan.gpuProperties.limits.maxComputeWorkGroupCount[0];
-        
-        while (groupCount * batches * 256 < totalInvocations)
-            batches++;
-        
-        while (groupCount * batches * 256 > totalInvocations)
-            groupCount--;
-        while (groupCount * batches * 256 < totalInvocations)
-            groupCount++;
-    }
+    u32 batches;
+    GetGroupCountAndBatches(totalInvocations, 256, groupCount, batches);
     
     push_constants_feed_forward pc = {};
     pc.inValuesIndex = inValuesIndex;
@@ -810,6 +834,48 @@ FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 wei
         vkCmdBindPipeline(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipelines[PIPELINE_TYPE_FEED_FORWARD].handle);
         vkCmdBindDescriptorSets(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipelines[PIPELINE_TYPE_FEED_FORWARD].layout, 0, 1, &vulkan.globalDescSet, 0, 0);
         vkCmdPushConstants(vulkan.cmdBuffer, vulkan.pipelines[PIPELINE_TYPE_FEED_FORWARD].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+        vkCmdDispatch(vulkan.cmdBuffer, groupCount, 1, 1);
+        AssertSuccess(vkEndCommandBuffer(vulkan.cmdBuffer));
+        
+        VkSubmitInfo submitInfo = {};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &vulkan.cmdBuffer;
+        AssertSuccess(vkQueueSubmit(vulkan.computeQueue, 1, &submitInfo, 0));
+        AssertSuccess(vkQueueWaitIdle(vulkan.computeQueue));
+    }
+    return true;
+}
+
+func bool Vulkan::
+BackPropagateCompute(u32 inErrorsIndex, u32 inErrorsDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex, u32 outErrorsIndex, u32 outErrorsDim)
+{
+    u32 totalInvocations = inErrorsDim * outErrorsDim;
+    u32 groupCount;
+    u32 batches;
+    GetGroupCountAndBatches(totalInvocations, 256, groupCount, batches);
+    
+    push_constants_back_propagate pc = {};
+    pc.inErrorsIndex = inErrorsIndex;
+    pc.inErrorsDim = inErrorsDim;
+    pc.weightsIndex = weightsIndex;
+    pc.weightsDim = weightsDim;
+    pc.biasesIndex = biasesIndex;
+    pc.outErrorsIndex = outErrorsIndex;
+    pc.outErrorsDim = outErrorsDim;
+    pc.maxBatches = batches;
+    
+    for (u32 batch = 0; batch < batches; batch++)
+    {
+        pc.batch = batch;
+        
+        VkCommandBufferBeginInfo beginInfo = {};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        AssertSuccess(vkBeginCommandBuffer(vulkan.cmdBuffer, &beginInfo));
+        vkCmdBindPipeline(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipelines[PIPELINE_TYPE_BACK_PROPAGATE].handle);
+        vkCmdBindDescriptorSets(vulkan.cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan.pipelines[PIPELINE_TYPE_BACK_PROPAGATE].layout, 0, 1, &vulkan.globalDescSet, 0, 0);
+        vkCmdPushConstants(vulkan.cmdBuffer, vulkan.pipelines[PIPELINE_TYPE_BACK_PROPAGATE].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
         vkCmdDispatch(vulkan.cmdBuffer, groupCount, 1, 1);
         AssertSuccess(vkEndCommandBuffer(vulkan.cmdBuffer));
         
@@ -902,7 +968,8 @@ ClearPipelinesAndStorageBuffers()
         ClearBuffer(vulkan.weightsBuffer);
         ClearBuffer(vulkan.biasesBuffer);
         ClearBuffer(vulkan.valuesBuffer);
-        ClearBuffer(vulkan.weightedValsBuffer);
+        ClearBuffer(vulkan.productsBuffer);
+        ClearBuffer(vulkan.errorsBuffer);
         ClearBuffer(vulkan.distPerPixelBuffer);
         ClearBuffer(vulkan.distPerImgBuffer);
     }
@@ -975,14 +1042,6 @@ Destroy()
         vkDeviceWaitIdle(vulkan.device);
         
         ClearPipelinesAndStorageBuffers();
-        
-        ClearBuffer(vulkan.valuesBuffer);
-        ClearBuffer(vulkan.weightsBuffer);
-        ClearBuffer(vulkan.biasesBuffer);
-        ClearBuffer(vulkan.valuesBuffer);
-        ClearBuffer(vulkan.weightedValsBuffer);
-        ClearBuffer(vulkan.distPerPixelBuffer);
-        ClearBuffer(vulkan.distPerImgBuffer);
         
         if(VulkanIsValidHandle(vulkan.cmdPool))
             vkDestroyCommandPool(vulkan.device, vulkan.cmdPool, 0);

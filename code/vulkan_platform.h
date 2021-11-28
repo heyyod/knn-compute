@@ -46,7 +46,15 @@ struct push_constants_feed_forward
 
 struct push_constants_back_propagate
 {
-    
+    u32 inErrorsIndex;
+    u32 inErrorsDim;
+    u32 weightsIndex;
+    u32 weightsDim;
+    u32 biasesIndex;
+    u32 outErrorsIndex;
+    u32 outErrorsDim;
+    u32 batch;
+    u32 maxBatches;
 };
 
 enum pipeline_type
@@ -82,9 +90,9 @@ struct vulkan_engine
     vulkan_buffer biasesBuffer;
     vulkan_buffer errorsBuffer;
     
-    // weightedValsBuffer is used as a temp buffer to calculate the products w_i * x_i.
-    // Their sum goes to the values buffer
-    vulkan_buffer weightedValsBuffer;
+    // productsBuffer is used as a temp buffer to calculate the products wi * xi or wi*ei
+    // Their sum goes to the values buffer or errors buffer
+    vulkan_buffer productsBuffer;
     
     // NOTE(heyyod): K-NN and NC buffers
     vulkan_buffer distPerPixelBuffer;

@@ -3,15 +3,16 @@
 #include <stdlib.h>
 #define RandomFloat0to1() (0.01f*(f32)(rand() % 101))
 
-f32 *testWV;
+f32 *testProducts;
 
 func bool
 CreateNeuralNet(u32* layersDims, u32 nLayers, neural_net &net, image_data trainData, image_data testData)
 {
     net.nLayers = nLayers;
     net.layers = (layer *)malloc(nLayers * sizeof(layer));
-    if (!Vulkan::AllocateNeuralNetMemory(layersDims, nLayers, &net.weights, &net.biases, &net.values, &testWV) ||
-        !Vulkan::CreatePipeline(PIPELINE_TYPE_FEED_FORWARD))
+    if (!Vulkan::AllocateNeuralNetMemory(layersDims, nLayers, &net.weights, &net.biases, &net.values, &net.errors, &testProducts) ||
+        !Vulkan::CreatePipeline(PIPELINE_TYPE_FEED_FORWARD) ||
+        !Vulkan::CreatePipeline(PIPELINE_TYPE_BACK_PROPAGATE))
         return false;
     
     // NOTE(heyyod): Normalize the input data
@@ -27,11 +28,12 @@ CreateNeuralNet(u32* layersDims, u32 nLayers, neural_net &net, image_data trainD
     net.layers[0].dimension= layersDims[0];
     net.layers[0].depth = 0;
     net.layers[0].valuesIndex = 0;
-    // biasesIndex & weightsIndex are ignored for layer[0] -> input layer
+    // biases/weights/errorsIndex are ignored for layer[0] -> input layer
     
     net.layers[1].valuesIndex = NUM_TRAIN_IMAGES + NUM_TEST_IMAGES;
     net.layers[1].biasesIndex = 0;
     net.layers[1].weightsIndex = 0;
+    net.layers[1].errorsIndex= 0;
     
     for (u32 i = 1; i < nLayers; i++)
     {
@@ -46,6 +48,7 @@ CreateNeuralNet(u32* layersDims, u32 nLayers, neural_net &net, image_data trainD
         {
             curr.valuesIndex = prev.valuesIndex + prev.dimension;
             curr.biasesIndex = prev.biasesIndex + prev.dimension;
+            curr.errorsIndex = prev.errorsIndex + prev.dimension;
             curr.weightsIndex = prev.weightsIndex + prev.dimension * prev.weightsDim;
         }
         
@@ -75,29 +78,42 @@ FeedForward(neural_net &net, u32 iTrain)
 {
     for (u32 iLayer = 0; iLayer < net.nLayers - 1; iLayer++)
     {
-        u32 inValuesIndex = net.layers[iLayer].valuesIndex;
+        u32 inValuesIndex = LayerValuesIndex(net, iLayer);
         if (iLayer == 0)
-        {
-            inValuesIndex+= iTrain * net.layers[0].dimension;
-        }
-        u32 inValuesDim = net.layers[iLayer].dimension;
+            inValuesIndex += iTrain * LayerDim(net, 0);
         
-        u32 weightsIndex = net.layers[iLayer + 1].weightsIndex;
-        u32 weightsDim = net.layers[iLayer + 1].weightsDim;
+        u32 inValuesDim = LayerDim(net, iLayer);
         
-        u32 biasesIndex = net.layers[iLayer + 1].biasesIndex;
+        u32 weightsIndex = LayerWeightsIndex(net, iLayer + 1);
+        u32 weightsDim = LayerWeightsDim(net, iLayer + 1);
         
-        u32 outValuesIndex = net.layers[iLayer + 1].valuesIndex;
-        u32 outValuesDim = net.layers[iLayer + 1].dimension;
+        u32 biasesIndex =  LayerBiasesIndex(net, iLayer + 1);
+        
+        u32 outValuesIndex = LayerValuesIndex(net, iLayer + 1);
+        u32 outValuesDim = LayerDim(net, iLayer + 1);
         
         Vulkan::FeedForwardCompute(inValuesIndex, inValuesDim, weightsIndex, weightsDim, biasesIndex, outValuesIndex, outValuesDim);
     }
 }
 
 func void
-BackPropagate()
+BackPropagate(neural_net &net)
 {
-    
+    for (u32 iLayer = net.nLayers - 1; iLayer > 1; iLayer--)
+    {
+        u32 inErrorsIndex = LayerErrorsIndex(net, iLayer);
+        u32 inErrorsDim = LayerDim(net, iLayer);
+        
+        u32 weightsIndex = LayerWeightsIndex(net, iLayer);
+        u32 weightsDim = LayerWeightsDim(net, iLayer);
+        
+        u32 biasesIndex =  LayerBiasesIndex(net, iLayer);
+        
+        u32 outErrorsIndex = LayerErrorsIndex(net, iLayer - 1);
+        u32 outErrorsDim = LayerDim(net, iLayer - 1);
+        
+        Vulkan::BackPropagateCompute(inErrorsIndex, inErrorsDim, weightsIndex, weightsDim, biasesIndex, outErrorsIndex, outErrorsDim);
+    }
 }
 
 func void
@@ -107,12 +123,15 @@ TrainNeuralNet(neural_net &net, image_data &trainData)
     {
         FeedForward(net, iTrain);
         
-        f32 *output = OutputLayerValues(net);
         f32 target[10] = {};
         target[trainData.labels[iTrain]] = 1.0f;
-        f32 outputErrors[10] = {};
+        f32 *output = OutputLayerValues(net);
+        f32 *outputErrors = OutputLayerErrors(net);
         for (u32 i = 0; i < 10; i++)
             outputErrors[i] = target[i] - output[i];
+        
+        // TODO(heyyod): Something is fucked up with the products buffer
+        BackPropagate(net);
     }
 }
 

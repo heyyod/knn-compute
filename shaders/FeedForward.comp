@@ -4,10 +4,10 @@
 
 layout (local_size_x = 256) in;
 
-layout(std430, set=0, binding=0) coherent buffer inputBuffer { float values[]; }; // train, test, perc values
+layout(std430, set=0, binding=0) coherent buffer valuesBuffer { float values[]; }; // train, test, perc values
 layout(std430, set=0, binding=1) readonly buffer weightsBuffer { float weights[]; };
 layout(std430, set=0, binding=2) readonly buffer biasesBuffer { float biases[]; };
-layout(std430, set=0, binding=3) buffer weightedValsBuffer { float weightedVals[]; };
+layout(std430, set=0, binding=3) buffer productsBuffer { float products[]; };
 
 layout( push_constant ) uniform constants
 {
@@ -37,7 +37,7 @@ void main()
     
     uint i = pushConstants.inValuesIndex + mod_u32(wv, pushConstants.weightsDim);
     uint w = pushConstants.weightsIndex + wv;
-    weightedVals[wv] = values[i] * weights[w];
+    products[wv] = values[i] * weights[w];
     
     barrier();
     
@@ -50,7 +50,7 @@ void main()
         values[o] = 0.0f;
         for (uint i = 0; i < pushConstants.weightsDim; i++)
         {
-            values[o] += weightedVals[i + gl_GlobalInvocationID.x * pushConstants.weightsDim];
+            values[o] += products[i + gl_GlobalInvocationID.x * pushConstants.weightsDim];
         }
         values[o] += biases[b];
     }
