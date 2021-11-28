@@ -53,5 +53,6 @@ void main()
             values[o] += products[i + gl_GlobalInvocationID.x * pushConstants.weightsDim];
         }
         values[o] += biases[b];
+        values[o] = 1 / (1 + exp(-values[o])); // apply sigmoid function
     }
 }

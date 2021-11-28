@@ -1,6 +1,8 @@
 #include "neural_net.h"
 
 #include <stdlib.h>
+#include <time.h>
+
 #define RandomFloat0to1() (0.01f*(f32)(rand() % 101))
 
 f32 *testProducts;
@@ -35,6 +37,7 @@ CreateNeuralNet(u32* layersDims, u32 nLayers, neural_net &net, image_data trainD
     net.layers[1].weightsIndex = 0;
     net.layers[1].errorsIndex= 0;
     
+    srand ((u32)time(0));
     for (u32 i = 1; i < nLayers; i++)
     {
         layer &prev = net.layers[i-1];
