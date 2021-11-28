@@ -3,8 +3,6 @@
 #include <stdlib.h>
 #include <time.h>
 
-#define RandomFloat0to1() (0.01f*(f32)(rand() % 101))
-
 f32 *testProducts;
 
 func bool
@@ -58,13 +56,19 @@ CreateNeuralNet(u32* layersDims, u32 nLayers, neural_net &net, image_data trainD
         // NOTE(heyyod): Randomize weights and biases
         for (u32 j = 0; j < curr.dimension; j++)
         {
-            net.biases[curr.biasesIndex + j] = RandomFloat0to1();
+            net.biases[curr.biasesIndex + j] = RandomFloat(-1.0f, 1.0f);
             for (u32 k = 0; k < curr.weightsDim; k++)
             {
-                net.weights[curr.weightsIndex + curr.weightsDim * j + k] = RandomFloat0to1();
+                net.weights[curr.weightsIndex + curr.weightsDim * j + k] = RandomFloat(-1.0f, 1.0f);
             }
         }
     }
+    
+    Print("\n---- Created Neural Network ----\n");
+    Print("Layers: " << nLayers << '\n');
+    for (u32 i = 0; i < nLayers; i++)
+        Print("|  " << layersDims[i] << "  ");
+    Print("|\n\n");
     return true;
 }
 
@@ -77,13 +81,13 @@ FreeNeuralNet(neural_net &net)
 }
 
 func void
-FeedForward(neural_net &net, u32 iTrain)
+FeedForward(neural_net &net, u32 imgIndex)
 {
     for (u32 iLayer = 0; iLayer < net.nLayers - 1; iLayer++)
     {
         u32 inValuesIndex = LayerValuesIndex(net, iLayer);
         if (iLayer == 0)
-            inValuesIndex += iTrain * LayerDim(net, 0);
+            inValuesIndex += imgIndex * LayerDim(net, 0);
         
         u32 inValuesDim = LayerDim(net, iLayer);
         
@@ -118,8 +122,10 @@ BackPropagate(neural_net &net, u32 trainIndex, f32 learningRate)
 }
 
 func void
-TrainNeuralNet(neural_net &net, image_data &trainData)
+TrainNeuralNet(neural_net &net, image_data &trainData, f32 learningRate)
 {
+    Print("\n---- Training Neural Net ----\n");
+    TimeStart();
     for (u32 iTrain  = 0; iTrain < NUM_TRAIN_IMAGES; iTrain++)
     {
         FeedForward(net, iTrain);
@@ -129,10 +135,45 @@ TrainNeuralNet(neural_net &net, image_data &trainData)
         f32 *output = OutputLayerValues(net);
         f32 *outputErrors = OutputLayerErrors(net);
         for (u32 i = 0; i < 10; i++)
-            outputErrors[i] = target[i] - output[i];
+            outputErrors[i] = (target[i] - output[i]);
         
-        // TODO(heyyod): Something is fucked up with the products buffer
-        BackPropagate(net, iTrain, 0.1);
+        BackPropagate(net, iTrain, learningRate);
+        
+        if (iTrain % 10000 == 0)
+        {
+            Print("Processed " << iTrain << '/' << NUM_TRAIN_IMAGES << '\n');
+        }
     }
+    TimeEnd();
+    PrintTimeElapsed();
+}
+
+func void
+TestNeuralNet(neural_net &net, image_data &testData, u32 nTest)
+{
+    Print("\n---- Testing Neural Net ----\n");
+    TimeStart();
+    u32 nSuccess = 0;
+    for (u32 iTest  = 0; iTest < nTest; iTest++)
+    {
+        FeedForward(net, iTest + NUM_TRAIN_IMAGES);
+        
+        u32 classify = 0;
+        f32 *output = OutputLayerValues(net);
+        for (u32 i = 1; i < OutputLayerDim(net); i++)
+        {
+            if (output[i] > output[classify])
+                classify = i;
+        }
+        if (classify == testData.labels[iTest])
+            nSuccess++;
+        
+        if (iTest % 1000 == 0)
+            Print("Processed " << iTest << '/' << nTest << '\n');
+    }
+    TimeEnd();
+    f32 rate = (f32)nSuccess / (f32)nTest;
+    std::cout << "Success rate: " << rate << std::endl;
+    PrintTimeElapsed();
 }
 

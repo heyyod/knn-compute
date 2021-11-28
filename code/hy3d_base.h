@@ -34,6 +34,8 @@ typedef double    f64;
 #define Mod(a, m) (((a) % (m)) >= 0 ? ((a) % (m)) : (((a) % (m)) + (m)))
 #define Square(x) ((x) * (x))
 
+#define RandomFloat(min, max) (((f32)rand()/(f32)(RAND_MAX)) * ((max) - (min)) + (min));
+
 // TODO: Make this an actual assetion
 #define AssertBreak() *(int *)0 = 0
 
@@ -67,7 +69,6 @@ AssertBreak()
 
 #define AdvancePointer(ptr, bytes) ptr = (u8*)ptr + bytes
 
-#if DEBUG_MODE
 #include <chrono>
 #include <thread>
 global_var std::chrono::steady_clock::time_point timeStart;
@@ -83,11 +84,5 @@ elapsedTime = duration.count()
 #define PrintTimeElapsed() \
 Print("Time Elapsed: " << elapsedTime << "s" << std::endl)
 #define SleepFor(x) std::this_thread::sleep_for(std::chrono::milliseconds(x));
-#else
-#define Now()
-#define TimeStart()
-#define TimeEnd()
-#define PrintTimeElapsed()
-#endif
 
 #endif

@@ -37,5 +37,6 @@ struct neural_net
 #define LayerErrors(net, l)         (&net.errors[net.layers[l].errorsIndex])
 #define OutputLayerValues(net)      LayerValues(net, net.nLayers - 1)
 #define OutputLayerErrors(net)      LayerErrors(net, net.nLayers - 1)
+#define OutputLayerDim(net)         LayerDim(net, net.nLayers - 1)
 
 #endif //NEURAL_NET_H

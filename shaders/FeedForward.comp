@@ -2,7 +2,7 @@
 
 #define MaskAndShiftRight(val, mask, shift) ((val & mask) >> shift)
 
-layout (local_size_x = 256) in;
+layout (local_size_x = 1024) in;
 
 layout(std430, set=0, binding=0) coherent buffer valuesBuffer { float values[]; }; // train, test, perc values
 layout(std430, set=0, binding=1) readonly buffer weightsBuffer { float weights[]; };
@@ -29,6 +29,11 @@ uint mod_u32( uint u32_bas , uint u32_div )
     return( u32_res );
 }
 
+float sigmoid(float x)
+{
+    return (1.0 / (1.0 + exp(-x)));
+}
+
 void main()
 {
     uint wv = gl_GlobalInvocationID.x + push.batch * gl_NumWorkGroups.x * 256;
@@ -53,6 +58,6 @@ void main()
             values[o] += products[i + gl_GlobalInvocationID.x * push.weightsDim];
         }
         values[o] += biases[b];
-        values[o] = 1 / (1 + exp(-values[o])); // apply sigmoid function
+        values[o] = sigmoid(values[o]); // apply sigmoid function
     }
 }

@@ -811,7 +811,7 @@ FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 wei
     u32 totalInvocations = inValuesDim * outValuesDim;
     u32 groupCount;
     u32 batches;
-    GetGroupCountAndBatches(totalInvocations, 256, groupCount, batches);
+    GetGroupCountAndBatches(totalInvocations, 1024, groupCount, batches);
     
     push_constants_feed_forward pc = {};
     pc.inValuesIndex = inValuesIndex;
@@ -855,7 +855,7 @@ BackPropagateCompute(u32 currLayerValuesIndex, u32 prevLayerValuesIndex,
     u32 totalInvocations = inErrorsDim * outErrorsDim;
     u32 groupCount;
     u32 batches;
-    GetGroupCountAndBatches(totalInvocations, 256, groupCount, batches);
+    GetGroupCountAndBatches(totalInvocations, 1024, groupCount, batches);
     
     push_constants_back_propagate pc = {};
     pc.currLayerValuesIndex = currLayerValuesIndex;

@@ -2,13 +2,13 @@
 
 #define MaskAndShiftRight(val, mask, shift) ((val & mask) >> shift)
 
-layout (local_size_x = 256) in;
+layout (local_size_x = 1024) in;
 
 layout(std430, set=0, binding=0) readonly buffer valuesBuffer { float values[]; };
 layout(std430, set=0, binding=1) buffer weightsBuffer { float weights[]; };
-layout(std430, set=0, binding=2) readonly buffer biasesBuffer { float biases[]; };
+layout(std430, set=0, binding=2) buffer biasesBuffer { float biases[]; };
 layout(std430, set=0, binding=3) buffer productsBuffer { float products[]; };
-layout(std430, set=0, binding=4) coherent buffer errorsBuffer { float errors[]; };
+layout(std430, set=0, binding=4) buffer errorsBuffer { float errors[]; };
 
 layout( push_constant ) uniform constants
 {
@@ -34,9 +34,14 @@ uint mod_u32( uint u32_bas , uint u32_div )
     return( u32_res );
 }
 
+float sigmoid(float x)
+{
+    return (1.0 / (1.0 + exp(-x)));
+}
+
 float dsigmoid(float x)
 {
-    return (1 / (1 + exp(-x)))*(1-(1 / (1 + exp(-x))));
+    return sigmoid(x)*(1.0-sigmoid(x));
 }
 
 void main()
@@ -44,8 +49,6 @@ void main()
     uint p = gl_GlobalInvocationID.x + push.batch * gl_NumWorkGroups.x * 256;
     if (p >= push.inErrorsDim * push.outErrorsDim)
     {
-        if (p < 784*1000)
-            products[0] = p;
         return;
     }
     
@@ -53,10 +56,17 @@ void main()
     uint e = push.inErrorsIndex + mod_u32(p, push.inErrorsDim);
     uint i = push.thisValuesIndex + wOffset / push.weightsDim;
     uint h = push.prevValuesIndex + mod_u32(wOffset, push.weightsDim);
+    uint b = push.biasesIndex + wOffset / push.weightsDim;
     uint w = push.weightsIndex + wOffset;
     
     // NOTE(heyyod): Weight and bias asjustments
-    weights[w] += push.learningRate * errors[e] * dsigmoid(values[i]) * values[h];
+    float delta = push.learningRate * errors[e] * dsigmoid(values[i]);
+    if (mod_u32(wOffset, push.weightsDim) == 0)
+    {
+        biases[b] += delta;
+    }
+    weights[w] += delta * values[h];
+    products[wOffset] = delta;
     
     // NOTE(heyyod): Error Calculation
     // This is skipped if we are on layer 1 since there are no more errors to compute
@@ -70,7 +80,6 @@ void main()
     if (push.batch == push.maxBatches - 1 &&
         gl_GlobalInvocationID.x < push.outErrorsDim)
     {
-        uint b = push.biasesIndex + gl_GlobalInvocationID.x;
         uint o = push.outErrorsIndex + gl_GlobalInvocationID.x;
         
         errors[o] = 0.0f;
