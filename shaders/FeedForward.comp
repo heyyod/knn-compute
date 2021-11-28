@@ -20,7 +20,7 @@ layout( push_constant ) uniform constants
     uint outValuesDim;
     uint batch;
     uint maxBatches;
-} pushConstants;
+} push;
 
 uint mod_u32( uint u32_bas , uint u32_div )
 {
@@ -31,26 +31,26 @@ uint mod_u32( uint u32_bas , uint u32_div )
 
 void main()
 {
-    uint wv = gl_GlobalInvocationID.x + pushConstants.batch * gl_NumWorkGroups.x * 256;
-    if (wv >= pushConstants.inValuesDim * pushConstants.weightsDim * pushConstants.outValuesDim)
+    uint wv = gl_GlobalInvocationID.x + push.batch * gl_NumWorkGroups.x * 256;
+    if (wv >= push.inValuesDim * push.weightsDim * push.outValuesDim)
         return;
     
-    uint i = pushConstants.inValuesIndex + mod_u32(wv, pushConstants.weightsDim);
-    uint w = pushConstants.weightsIndex + wv;
+    uint i = push.inValuesIndex + mod_u32(wv, push.weightsDim);
+    uint w = push.weightsIndex + wv;
     products[wv] = values[i] * weights[w];
     
     barrier();
     
-    if (pushConstants.batch == pushConstants.maxBatches - 1 &&
-        gl_GlobalInvocationID.x < pushConstants.outValuesDim)
+    if (push.batch == push.maxBatches - 1 &&
+        gl_GlobalInvocationID.x < push.outValuesDim)
     {
-        uint b = pushConstants.biasesIndex + gl_GlobalInvocationID.x;
-        uint o = pushConstants.outValuesIndex + gl_GlobalInvocationID.x;
+        uint b = push.biasesIndex + gl_GlobalInvocationID.x;
+        uint o = push.outValuesIndex + gl_GlobalInvocationID.x;
         
         values[o] = 0.0f;
-        for (uint i = 0; i < pushConstants.weightsDim; i++)
+        for (uint i = 0; i < push.weightsDim; i++)
         {
-            values[o] += products[i + gl_GlobalInvocationID.x * pushConstants.weightsDim];
+            values[o] += products[i + gl_GlobalInvocationID.x * push.weightsDim];
         }
         values[o] += biases[b];
         values[o] = 1 / (1 + exp(-values[o])); // apply sigmoid function

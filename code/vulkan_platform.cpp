@@ -19,7 +19,7 @@ namespace Vulkan
     
     func bool KnnCompute(u32 &testImageIndex, u32 distP);
     func bool FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex, u32 outValuesIndex, u32 outValuesDim);
-    func bool BackPropagateCompute(u32 inErrorsIndex, u32 inErrorsDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex, u32 outErrorsIndex, u32 outErrorsDim);
+    func bool BackPropagateCompute(u32 currLayerValuesIndex, u32 prevLayerValuesIndex, u32 inErrorsIndex, u32 inErrorsDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex, u32 outErrorsIndex, u32 outErrorsDim, f32 learningRate, u32 layerIndex);
     
     func bool LoadShader(char *filepath, VkShaderModule *shaderOut);
     func bool FindMemoryProperties(u32 memoryType, VkMemoryPropertyFlags requiredProperties, u32 &memoryIndexOut);
@@ -848,7 +848,9 @@ FeedForwardCompute(u32 inValuesIndex, u32 inValuesDim, u32 weightsIndex, u32 wei
 }
 
 func bool Vulkan::
-BackPropagateCompute(u32 inErrorsIndex, u32 inErrorsDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex, u32 outErrorsIndex, u32 outErrorsDim)
+BackPropagateCompute(u32 currLayerValuesIndex, u32 prevLayerValuesIndex,
+                     u32 inErrorsIndex, u32 inErrorsDim, u32 weightsIndex, u32 weightsDim, u32 biasesIndex,
+                     u32 outErrorsIndex, u32 outErrorsDim, f32 learningRate, u32 layerIndex)
 {
     u32 totalInvocations = inErrorsDim * outErrorsDim;
     u32 groupCount;
@@ -856,6 +858,8 @@ BackPropagateCompute(u32 inErrorsIndex, u32 inErrorsDim, u32 weightsIndex, u32 w
     GetGroupCountAndBatches(totalInvocations, 256, groupCount, batches);
     
     push_constants_back_propagate pc = {};
+    pc.currLayerValuesIndex = currLayerValuesIndex;
+    pc.prevLayerValuesIndex = prevLayerValuesIndex;
     pc.inErrorsIndex = inErrorsIndex;
     pc.inErrorsDim = inErrorsDim;
     pc.weightsIndex = weightsIndex;
@@ -863,6 +867,8 @@ BackPropagateCompute(u32 inErrorsIndex, u32 inErrorsDim, u32 weightsIndex, u32 w
     pc.biasesIndex = biasesIndex;
     pc.outErrorsIndex = outErrorsIndex;
     pc.outErrorsDim = outErrorsDim;
+    pc.learningRate = learningRate;
+    pc.layerIndex = layerIndex;
     pc.maxBatches = batches;
     
     for (u32 batch = 0; batch < batches; batch++)

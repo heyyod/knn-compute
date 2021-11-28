@@ -4,13 +4,16 @@
 
 layout (local_size_x = 256) in;
 
-layout(std430, set=0, binding=1) readonly buffer weightsBuffer { float weights[]; };
+layout(std430, set=0, binding=0) readonly buffer valuesBuffer { float values[]; };
+layout(std430, set=0, binding=1) buffer weightsBuffer { float weights[]; };
 layout(std430, set=0, binding=2) readonly buffer biasesBuffer { float biases[]; };
 layout(std430, set=0, binding=3) buffer productsBuffer { float products[]; };
 layout(std430, set=0, binding=4) coherent buffer errorsBuffer { float errors[]; };
 
 layout( push_constant ) uniform constants
 {
+    uint thisValuesIndex;
+    uint prevValuesIndex;
     uint inErrorsIndex;
     uint inErrorsDim;
     uint weightsIndex;
@@ -18,9 +21,11 @@ layout( push_constant ) uniform constants
     uint biasesIndex;
     uint outErrorsIndex;
     uint outErrorsDim;
+    float learningRate;
+    uint iLayer;
     uint batch;
     uint maxBatches;
-} pushConstants;
+} push;
 
 uint mod_u32( uint u32_bas , uint u32_div )
 {
@@ -29,30 +34,50 @@ uint mod_u32( uint u32_bas , uint u32_div )
     return( u32_res );
 }
 
+float dsigmoid(float x)
+{
+    return (1 / (1 + exp(-x)))*(1-(1 / (1 + exp(-x))));
+}
+
 void main()
 {
-    uint p = gl_GlobalInvocationID.x + pushConstants.batch * gl_NumWorkGroups.x * 256;
-    if (p >= pushConstants.inErrorsDim * pushConstants.outErrorsDim)
+    uint p = gl_GlobalInvocationID.x + push.batch * gl_NumWorkGroups.x * 256;
+    if (p >= push.inErrorsDim * push.outErrorsDim)
+    {
+        if (p < 784*1000)
+            products[0] = p;
+        return;
+    }
+    
+    uint wOffset = mod_u32(p, push.inErrorsDim) * push.weightsDim + (p / push.inErrorsDim);
+    uint e = push.inErrorsIndex + mod_u32(p, push.inErrorsDim);
+    uint i = push.thisValuesIndex + wOffset / push.weightsDim;
+    uint h = push.prevValuesIndex + mod_u32(wOffset, push.weightsDim);
+    uint w = push.weightsIndex + wOffset;
+    
+    // NOTE(heyyod): Weight and bias asjustments
+    weights[w] += push.learningRate * errors[e] * dsigmoid(values[i]) * values[h];
+    
+    // NOTE(heyyod): Error Calculation
+    // This is skipped if we are on layer 1 since there are no more errors to compute
+    if (push.iLayer == 1)
         return;
     
-    uint e = pushConstants.inErrorsIndex + mod_u32(p, pushConstants.inErrorsDim);
-    uint w = pushConstants.weightsIndex + mod_u32(p, pushConstants.inErrorsDim) * pushConstants.weightsDim + (p / pushConstants.inErrorsDim);
     products[p] = errors[e] * weights[w];
     
     barrier();
     
-    if (pushConstants.batch == pushConstants.maxBatches - 1 &&
-        gl_GlobalInvocationID.x < pushConstants.outErrorsDim)
+    if (push.batch == push.maxBatches - 1 &&
+        gl_GlobalInvocationID.x < push.outErrorsDim)
     {
-        uint b = pushConstants.biasesIndex + gl_GlobalInvocationID.x;
-        uint o = pushConstants.outErrorsIndex + gl_GlobalInvocationID.x;
+        uint b = push.biasesIndex + gl_GlobalInvocationID.x;
+        uint o = push.outErrorsIndex + gl_GlobalInvocationID.x;
         
         errors[o] = 0.0f;
         
-        for (uint i = 0; i < pushConstants.inErrorsDim; i++)
+        for (uint i = 0; i < push.inErrorsDim; i++)
         {
-            errors[o] += products[i + gl_GlobalInvocationID.x * pushConstants.inErrorsDim];
+            errors[o] += products[i + gl_GlobalInvocationID.x * push.inErrorsDim];
         }
-        //errors[o] += biases[b];
     }
 }

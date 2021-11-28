@@ -100,22 +100,20 @@ FeedForward(neural_net &net, u32 iTrain)
 }
 
 func void
-BackPropagate(neural_net &net)
+BackPropagate(neural_net &net, u32 trainIndex, f32 learningRate)
 {
-    for (u32 iLayer = net.nLayers - 1; iLayer > 1; iLayer--)
+    for (u32 iLayer = net.nLayers - 1; iLayer > 0; iLayer--)
     {
-        u32 inErrorsIndex = LayerErrorsIndex(net, iLayer);
-        u32 inErrorsDim = LayerDim(net, iLayer);
+        u32 prevLayerValuesIndex = LayerValuesIndex(net, iLayer-1);
+        if (iLayer == 1)
+            prevLayerValuesIndex *= trainIndex * LayerDim(net, iLayer-1);
         
-        u32 weightsIndex = LayerWeightsIndex(net, iLayer);
-        u32 weightsDim = LayerWeightsDim(net, iLayer);
-        
-        u32 biasesIndex =  LayerBiasesIndex(net, iLayer);
-        
-        u32 outErrorsIndex = LayerErrorsIndex(net, iLayer - 1);
-        u32 outErrorsDim = LayerDim(net, iLayer - 1);
-        
-        Vulkan::BackPropagateCompute(inErrorsIndex, inErrorsDim, weightsIndex, weightsDim, biasesIndex, outErrorsIndex, outErrorsDim);
+        Vulkan::BackPropagateCompute(LayerValuesIndex(net, iLayer), prevLayerValuesIndex,
+                                     LayerErrorsIndex(net, iLayer), LayerDim(net, iLayer),
+                                     LayerWeightsIndex(net, iLayer), LayerWeightsDim(net, iLayer),
+                                     LayerBiasesIndex(net, iLayer),
+                                     LayerErrorsIndex(net, iLayer - 1), LayerDim(net, iLayer - 1),
+                                     learningRate, iLayer);
     }
 }
 
@@ -134,7 +132,7 @@ TrainNeuralNet(neural_net &net, image_data &trainData)
             outputErrors[i] = target[i] - output[i];
         
         // TODO(heyyod): Something is fucked up with the products buffer
-        BackPropagate(net);
+        BackPropagate(net, iTrain, 0.1);
     }
 }
 

@@ -46,6 +46,8 @@ struct push_constants_feed_forward
 
 struct push_constants_back_propagate
 {
+    u32 currLayerValuesIndex;
+    u32 prevLayerValuesIndex;
     u32 inErrorsIndex;
     u32 inErrorsDim;
     u32 weightsIndex;
@@ -53,6 +55,8 @@ struct push_constants_back_propagate
     u32 biasesIndex;
     u32 outErrorsIndex;
     u32 outErrorsDim;
+    float learningRate;
+    u32 layerIndex;
     u32 batch;
     u32 maxBatches;
 };
